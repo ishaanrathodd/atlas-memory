@@ -109,6 +109,7 @@ async def test_list_recent_sessions_ignores_legacy_current_session_id():
     memory_session_id = str(uuid4())
     client.transport.sessions[memory_session_id] = SimpleNamespace(
         id=memory_session_id,
+        agent_namespace="default",
         platform=SimpleNamespace(value="telegram"),
         started_at=now,
         ended_at=None,
@@ -142,6 +143,7 @@ async def test_search_sessions_ignores_legacy_current_session_id():
     memory_session_id = str(uuid4())
     client.transport.sessions[memory_session_id] = SimpleNamespace(
         id=memory_session_id,
+        agent_namespace="default",
         platform=SimpleNamespace(value="telegram"),
         started_at=now,
         ended_at=now,
@@ -179,6 +181,7 @@ async def test_search_sessions_is_cross_platform_by_default():
     memory_session_id = str(uuid4())
     client.transport.sessions[memory_session_id] = SimpleNamespace(
         id=memory_session_id,
+        agent_namespace="default",
         platform=SimpleNamespace(value="whatsapp"),
         started_at=now,
         ended_at=now,
@@ -216,6 +219,7 @@ async def test_resolve_session_reference_prefers_legacy_session_id():
     memory_session_id = str(uuid4())
     session = SimpleNamespace(
         id=memory_session_id,
+        agent_namespace="default",
         title="Roadmap",
         legacy_session_id="20260401_193524_e17c68",
         platform=SimpleNamespace(value="telegram"),
@@ -275,6 +279,7 @@ async def test_resolve_session_reference_matches_latest_numbered_title():
     numbered_id = str(uuid4())
     client.transport.sessions[base_id] = SimpleNamespace(
         id=base_id,
+        agent_namespace="default",
         title="My Project",
         legacy_session_id=None,
         platform=SimpleNamespace(value="local"),
@@ -285,6 +290,7 @@ async def test_resolve_session_reference_matches_latest_numbered_title():
     )
     client.transport.sessions[numbered_id] = SimpleNamespace(
         id=numbered_id,
+        agent_namespace="default",
         title="My Project #2",
         legacy_session_id=None,
         platform=SimpleNamespace(value="local"),
@@ -314,6 +320,7 @@ async def test_list_named_sessions_filters_empty_titles():
     untitled_id = str(uuid4())
     client.transport.sessions[titled_id] = SimpleNamespace(
         id=titled_id,
+        agent_namespace="default",
         title="Named Session",
         legacy_session_id="legacy-1",
         platform=SimpleNamespace(value="telegram"),
@@ -324,6 +331,7 @@ async def test_list_named_sessions_filters_empty_titles():
     )
     client.transport.sessions[untitled_id] = SimpleNamespace(
         id=untitled_id,
+        agent_namespace="default",
         title=None,
         legacy_session_id=None,
         platform=SimpleNamespace(value="telegram"),
@@ -347,6 +355,7 @@ async def test_list_all_sessions_includes_model_config():
     session_id = str(uuid4())
     client.transport.sessions[session_id] = SimpleNamespace(
         id=session_id,
+        agent_namespace="default",
         title="ACP Session",
         legacy_session_id="legacy-acp-1",
         platform=SimpleNamespace(value="other"),
@@ -378,6 +387,7 @@ async def test_list_live_session_routes_prefers_session_updated_at():
     session_id = str(uuid4())
     client.transport.sessions[session_id] = SimpleNamespace(
         id=session_id,
+        agent_namespace="default",
         title="Telegram DM",
         legacy_session_id="20260402_111723_6968b2d2",
         platform=SimpleNamespace(value="telegram"),
@@ -411,6 +421,7 @@ async def test_load_session_transcript_returns_messages_with_metadata():
     memory_session_id = str(uuid4())
     session = SimpleNamespace(
         id=memory_session_id,
+        agent_namespace="default",
         title="Transcript Session",
         legacy_session_id="legacy-42",
         platform=SimpleNamespace(value="local"),
@@ -462,6 +473,7 @@ async def test_update_session_title_updates_title():
     memory_session_id = str(uuid4())
     session = SimpleNamespace(
         id=memory_session_id,
+        agent_namespace="default",
         title=None,
         legacy_session_id="legacy-7",
         platform=SimpleNamespace(value="local"),
@@ -488,6 +500,7 @@ async def test_delete_export_prune_and_stats_use_memory_sessions():
     recent_id = str(uuid4())
     old_session = SimpleNamespace(
         id=old_id,
+        agent_namespace="default",
         title="Old",
         legacy_session_id="old-1",
         platform=SimpleNamespace(value="local"),
@@ -498,6 +511,7 @@ async def test_delete_export_prune_and_stats_use_memory_sessions():
     )
     recent_session = SimpleNamespace(
         id=recent_id,
+        agent_namespace="default",
         title="Recent",
         legacy_session_id="recent-1",
         platform=SimpleNamespace(value="telegram"),

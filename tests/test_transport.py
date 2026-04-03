@@ -165,6 +165,7 @@ async def test_transport_get_session_by_legacy_id_returns_row() -> None:
                 [
                     {
                         "id": session_id,
+                        "agent_namespace": "default",
                         "platform": "local",
                         "legacy_session_id": "legacy-1",
                         "started_at": now.isoformat(),
@@ -195,6 +196,7 @@ async def test_transport_list_sessions_applies_platform_filter() -> None:
                 [
                     {
                         "id": str(uuid4()),
+                        "agent_namespace": "default",
                         "platform": "telegram",
                         "title": "Named",
                         "started_at": now.isoformat(),
@@ -219,7 +221,7 @@ async def test_transport_list_sessions_applies_platform_filter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transport_list_sessions_filters_agent_namespace_with_legacy_main_support() -> None:
+async def test_transport_list_sessions_filters_agent_namespace_strictly() -> None:
     now = datetime.now(timezone.utc)
     fake_client = FakeSupabaseClient(
         {
@@ -227,7 +229,7 @@ async def test_transport_list_sessions_filters_agent_namespace_with_legacy_main_
                 [
                     {
                         "id": str(uuid4()),
-                        "agent_namespace": None,
+                        "agent_namespace": "default",
                         "platform": "telegram",
                         "started_at": now.isoformat(),
                         "message_count": 1,
@@ -264,11 +266,51 @@ async def test_transport_list_sessions_filters_agent_namespace_with_legacy_main_
     )
     transport = SupabaseTransport(client=fake_client)
 
-    main_sessions = await transport.list_sessions(limit=10, platform="telegram", agent_namespace="main")
+    default_sessions = await transport.list_sessions(limit=10, platform="telegram", agent_namespace="default")
     dhruv_sessions = await transport.list_sessions(limit=10, platform="telegram", agent_namespace="dhruv")
 
-    assert [session.agent_namespace for session in main_sessions] == [None, "main"]
+    assert [session.agent_namespace for session in default_sessions] == ["default"]
     assert [session.agent_namespace for session in dhruv_sessions] == ["dhruv"]
+
+
+@pytest.mark.asyncio
+async def test_transport_list_sessions_defaults_to_current_profile_namespace() -> None:
+    now = datetime.now(timezone.utc)
+    fake_client = FakeSupabaseClient(
+        {
+            "sessions": FakeQuery(
+                [
+                    {
+                        "id": str(uuid4()),
+                        "agent_namespace": "default",
+                        "platform": "telegram",
+                        "started_at": now.isoformat(),
+                        "message_count": 1,
+                        "user_message_count": 1,
+                        "topics": [],
+                        "dominant_emotions": [],
+                        "dominant_emotion_counts": {},
+                    },
+                    {
+                        "id": str(uuid4()),
+                        "agent_namespace": "research",
+                        "platform": "telegram",
+                        "started_at": now.isoformat(),
+                        "message_count": 1,
+                        "user_message_count": 1,
+                        "topics": [],
+                        "dominant_emotions": [],
+                        "dominant_emotion_counts": {},
+                    },
+                ]
+            )
+        }
+    )
+    transport = SupabaseTransport(client=fake_client)
+
+    sessions = await transport.list_sessions(limit=10, platform="telegram")
+
+    assert [session.agent_namespace for session in sessions] == ["default"]
 
 
 @pytest.mark.asyncio
@@ -316,7 +358,7 @@ async def test_transport_list_recent_episodes_filters_agent_namespace() -> None:
                     {
                         "id": str(uuid4()),
                         "session_id": session_id,
-                        "agent_namespace": "main",
+                        "agent_namespace": "default",
                         "role": "user",
                         "content": "main row",
                         "content_hash": "hash-1",
@@ -343,9 +385,42 @@ async def test_transport_list_recent_episodes_filters_agent_namespace() -> None:
     )
     transport = SupabaseTransport(client=fake_client)
 
-    episodes = await transport.list_recent_episodes(limit=5, agent_namespace="main")
+    episodes = await transport.list_recent_episodes(limit=5, agent_namespace="default")
 
     assert [episode.content for episode in episodes] == ["main row"]
+
+
+@pytest.mark.asyncio
+async def test_transport_get_fact_does_not_cross_profile_boundaries() -> None:
+    fact_id = str(uuid4())
+    fake_client = FakeSupabaseClient(
+        {
+            "facts": FakeQuery(
+                [
+                    {
+                        "id": fact_id,
+                        "agent_namespace": "research",
+                        "content": "secret research fact",
+                        "category": "fact",
+                        "confidence": 1.0,
+                        "event_time": datetime.now(timezone.utc).isoformat(),
+                        "transaction_time": datetime.now(timezone.utc).isoformat(),
+                        "is_active": True,
+                        "source_episode_ids": [],
+                        "access_count": 0,
+                        "tags": [],
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                ]
+            )
+        }
+    )
+    transport = SupabaseTransport(client=fake_client)
+
+    fact = await transport.get_fact(fact_id)
+
+    assert fact is None
 
 
 @pytest.mark.asyncio
@@ -476,10 +551,11 @@ async def test_transport_search_episodes_uses_schema_rpc_and_formats_vector() ->
             "sessions": FakeQuery([]),
             "episodes": FakeQuery(
                 [
-                    {
-                        "id": episode_id,
-                        "session_id": session_id,
-                        "role": "user",
+                        {
+                            "id": episode_id,
+                            "session_id": session_id,
+                            "agent_namespace": "default",
+                            "role": "user",
                         "content": "hello",
                         "content_hash": "hash",
                         "embedding": vector_literal,
@@ -520,10 +596,11 @@ async def test_transport_search_episodes_falls_back_to_query_ranked_scan(monkeyp
         {
             "episodes": FakeQuery(
                 [
-                    {
-                        "id": str(uuid4()),
-                        "session_id": session_id,
-                        "role": "user",
+                        {
+                            "id": str(uuid4()),
+                            "session_id": session_id,
+                            "agent_namespace": "default",
+                            "role": "user",
                         "content": "this mentions fallback query exactly",
                         "content_hash": "hash",
                         "embedding": _vector_to_pg(_zero_vector()),
@@ -534,10 +611,11 @@ async def test_transport_search_episodes_falls_back_to_query_ranked_scan(monkeyp
                         "emotional_intensity": 0.0,
                         "message_timestamp": now.isoformat(),
                     },
-                    {
-                        "id": str(uuid4()),
-                        "session_id": str(uuid4()),
-                        "role": "user",
+                        {
+                            "id": str(uuid4()),
+                            "session_id": str(uuid4()),
+                            "agent_namespace": "default",
+                            "role": "user",
                         "content": "completely unrelated recent chatter",
                         "content_hash": "hash-2",
                         "embedding": _vector_to_pg(_zero_vector()),
@@ -572,10 +650,11 @@ async def test_transport_search_episodes_survives_embedding_failure() -> None:
         {
             "episodes": FakeQuery(
                 [
-                    {
-                        "id": str(uuid4()),
-                        "session_id": str(uuid4()),
-                        "role": "user",
+                        {
+                            "id": str(uuid4()),
+                            "session_id": str(uuid4()),
+                            "agent_namespace": "default",
+                            "role": "user",
                         "content": "we worked on signal memory recall yesterday",
                         "content_hash": "hash",
                         "embedding": _vector_to_pg(_zero_vector()),
@@ -662,10 +741,11 @@ async def test_transport_search_episodes_merges_lexical_hits_and_penalizes_meta_
         {
             "episodes": FakeQuery(
                 [
-                    {
-                        "id": meta_episode_id,
-                        "session_id": str(uuid4()),
-                        "role": "assistant",
+                        {
+                            "id": meta_episode_id,
+                            "session_id": str(uuid4()),
+                            "agent_namespace": "default",
+                            "role": "assistant",
                         "content": "The Q4 answer is in line 262 of the JSONL. Let me search the file for insecurity details.",
                         "content_hash": "meta-hash",
                         "embedding": _vector_to_pg(_zero_vector()),
@@ -676,10 +756,11 @@ async def test_transport_search_episodes_merges_lexical_hits_and_penalizes_meta_
                         "emotional_intensity": 0.0,
                         "message_timestamp": now.isoformat(),
                     },
-                    {
-                        "id": raw_episode_id,
-                        "session_id": session_id,
-                        "role": "user",
+                        {
+                            "id": raw_episode_id,
+                            "session_id": session_id,
+                            "agent_namespace": "default",
+                            "role": "user",
                         "content": (
                             "I have one insecurity that really gets me. "
                             "My most recent girlfriend was being harrased by someone and I felt embarrassed "

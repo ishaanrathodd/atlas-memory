@@ -22,6 +22,10 @@ except ImportError:  # pragma: no cover - exercised indirectly in environments w
 
 from memory.config import MemoryConfig
 from memory.embedding import EmbeddingProvider
+from memory.instance_identity import (
+    get_agent_namespace,
+    normalize_agent_namespace as normalize_instance_agent_namespace,
+)
 from memory.models import (
     ActiveState,
     Commitment,
@@ -448,30 +452,43 @@ def _encode_session_compat_topics(topics: list[Any] | None, metadata: dict[str, 
     return cleaned
 
 
-def _normalize_agent_namespace(agent_namespace: str | None) -> str | None:
+def _explicit_agent_namespace(agent_namespace: str | None) -> str | None:
     cleaned = str(agent_namespace or "").strip()
-    return cleaned or None
+    if not cleaned:
+        return None
+    return normalize_instance_agent_namespace(cleaned)
+
+
+def _resolved_agent_namespace(agent_namespace: str | None) -> str:
+    explicit = _explicit_agent_namespace(agent_namespace)
+    if explicit is not None:
+        return explicit
+    return get_agent_namespace()
+
+
+def _normalize_agent_namespace(agent_namespace: str | None) -> str | None:
+    return _explicit_agent_namespace(agent_namespace)
 
 
 def _agent_namespace_matches(record_namespace: Any, requested_namespace: str | None) -> bool:
-    requested = _normalize_agent_namespace(requested_namespace)
-    if requested is None:
-        return True
-    current = _normalize_agent_namespace(record_namespace)
-    if requested == "main":
-        return current in (None, "main")
+    requested = _resolved_agent_namespace(requested_namespace)
+    current = _explicit_agent_namespace(record_namespace)
     return current == requested
 
 
 def _filter_records_by_agent_namespace(records: list[Any], requested_namespace: str | None) -> list[Any]:
-    requested = _normalize_agent_namespace(requested_namespace)
-    if requested is None:
-        return list(records)
+    requested = _resolved_agent_namespace(requested_namespace)
     return [
         record
         for record in records
         if _agent_namespace_matches(getattr(record, "agent_namespace", None), requested)
     ]
+
+
+def _ensure_payload_agent_namespace(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    normalized["agent_namespace"] = _resolved_agent_namespace(normalized.get("agent_namespace"))
+    return normalized
 
 
 class MemoryTransport(Protocol):
@@ -703,7 +720,7 @@ class SupabaseTransport:
         return self._require_record(response, operation="update_session_topics_compat")
 
     async def _insert_session_payload(self, payload: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
-        working = dict(payload)
+        working = _ensure_payload_agent_namespace(payload)
         dropped: dict[str, Any] = {}
         while True:
             try:
@@ -738,7 +755,7 @@ class SupabaseTransport:
         return None, dropped
 
     async def _insert_payload(self, table: str, payload: dict[str, Any], *, operation: str) -> tuple[Any, dict[str, Any]]:
-        working = dict(payload)
+        working = _ensure_payload_agent_namespace(payload)
         dropped: dict[str, Any] = {}
         while True:
             try:
@@ -874,10 +891,14 @@ class SupabaseTransport:
             if _extract_unknown_column(exc) == "legacy_session_id":
                 return None
             raise
-        record = _first_response_record(response)
-        if record is None:
+        records = [
+            Session.model_validate(_normalize_record(item))
+            for item in _response_rows(response)
+        ]
+        matches = _filter_records_by_agent_namespace(records, None)
+        if not matches:
             return None
-        return Session.model_validate(_normalize_record(record))
+        return matches[0]
 
     async def list_sessions(
         self,
@@ -977,7 +998,7 @@ class SupabaseTransport:
         return Episode.model_validate(_normalize_record(record))
 
     async def insert_fact(self, fact: Fact) -> Fact:
-        payload = _serialize_value(fact.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(fact.model_dump(exclude_none=True)))
         try:
             response, _ = await self._insert_payload("facts", payload, operation="insert_fact")
             return Fact.model_validate(self._require_record(response, operation="insert_fact"))
@@ -986,11 +1007,13 @@ class SupabaseTransport:
                 raise
             if not fact.content_fingerprint:
                 raise
+            agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
             response = await self._run(
                 lambda: self._schema_client()
                 .table("facts")
                 .select("*")
                 .eq("content_fingerprint", fact.content_fingerprint)
+                .eq("agent_namespace", agent_namespace)
                 .limit(1)
                 .execute()
             )
@@ -1003,7 +1026,10 @@ class SupabaseTransport:
         record = _first_response_record(response)
         if record is None:
             return None
-        return Fact.model_validate(record)
+        fact = Fact.model_validate(record)
+        if not _agent_namespace_matches(fact.agent_namespace, None):
+            return None
+        return fact
 
     async def update_fact(self, fact_id: str, updates: dict[str, Any]) -> Fact:
         payload = _serialize_value(dict(updates))
@@ -1246,24 +1272,27 @@ class SupabaseTransport:
         return _filter_records_by_agent_namespace(facts, agent_namespace)[:limit]
 
     async def insert_fact_history(self, history: FactHistory) -> FactHistory:
-        payload = _serialize_value(history.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(history.model_dump(exclude_none=True)))
         response, _ = await self._insert_payload("fact_history", payload, operation="insert_fact_history")
         return FactHistory.model_validate(self._require_record(response, operation="insert_fact_history"))
 
     async def upsert_active_state(self, state: ActiveState) -> ActiveState:
-        payload = _serialize_value(state.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(state.model_dump(exclude_none=True)))
         state_key = str(payload.get("state_key") or "").strip()
         if not state_key:
             raise ValueError("ActiveState.state_key is required.")
-        agent_namespace = payload.get("agent_namespace")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
 
         def _find_existing() -> Any:
-            query = self._schema_client().table("active_state").select("*").eq("state_key", state_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.limit(1).execute()
+            return (
+                self._schema_client()
+                .table("active_state")
+                .select("*")
+                .eq("state_key", state_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
 
         try:
             response = await self._run(_find_existing)
@@ -1320,19 +1349,22 @@ class SupabaseTransport:
         return states[:limit]
 
     async def upsert_directive(self, directive: Directive) -> Directive:
-        payload = _serialize_value(directive.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(directive.model_dump(exclude_none=True)))
         directive_key = str(payload.get("directive_key") or "").strip()
         if not directive_key:
             raise ValueError("Directive.directive_key is required.")
-        agent_namespace = payload.get("agent_namespace")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
 
         def _find_existing() -> Any:
-            query = self._schema_client().table("directives").select("*").eq("directive_key", directive_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.limit(1).execute()
+            return (
+                self._schema_client()
+                .table("directives")
+                .select("*")
+                .eq("directive_key", directive_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
 
         try:
             response = await self._run(_find_existing)
@@ -1389,19 +1421,22 @@ class SupabaseTransport:
         return directives[:limit]
 
     async def upsert_timeline_event(self, event: TimelineEvent) -> TimelineEvent:
-        payload = _serialize_value(event.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(event.model_dump(exclude_none=True)))
         event_key = str(payload.get("event_key") or "").strip()
         if not event_key:
             raise ValueError("TimelineEvent.event_key is required.")
-        agent_namespace = payload.get("agent_namespace")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
 
         def _find_existing() -> Any:
-            query = self._schema_client().table("timeline_events").select("*").eq("event_key", event_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.limit(1).execute()
+            return (
+                self._schema_client()
+                .table("timeline_events")
+                .select("*")
+                .eq("event_key", event_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
 
         try:
             response = await self._run(_find_existing)
@@ -1453,20 +1488,23 @@ class SupabaseTransport:
         return events[:limit]
 
     async def upsert_decision_outcome(self, outcome: DecisionOutcome) -> DecisionOutcome:
-        payload = _serialize_value(outcome.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(outcome.model_dump(exclude_none=True)))
         payload["lesson"] = _serialize_value(outcome.lesson)
         outcome_key = str(payload.get("outcome_key") or "").strip()
         if not outcome_key:
             raise ValueError("DecisionOutcome.outcome_key is required.")
-        agent_namespace = payload.get("agent_namespace")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
 
         def _find_existing() -> Any:
-            query = self._schema_client().table("decision_outcomes").select("*").eq("outcome_key", outcome_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.limit(1).execute()
+            return (
+                self._schema_client()
+                .table("decision_outcomes")
+                .select("*")
+                .eq("outcome_key", outcome_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
 
         try:
             response = await self._run(_find_existing)
@@ -1533,12 +1571,14 @@ class SupabaseTransport:
             return False
 
         def _delete() -> Any:
-            query = self._schema_client().table("decision_outcomes").delete().eq("outcome_key", normalized_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.execute()
+            return (
+                self._schema_client()
+                .table("decision_outcomes")
+                .delete()
+                .eq("outcome_key", normalized_key)
+                .eq("agent_namespace", _resolved_agent_namespace(agent_namespace))
+                .execute()
+            )
 
         try:
             await self._run(_delete)
@@ -1550,19 +1590,22 @@ class SupabaseTransport:
         return True
 
     async def upsert_pattern(self, pattern: Pattern) -> Pattern:
-        payload = _serialize_value(pattern.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(pattern.model_dump(exclude_none=True)))
         pattern_key = str(payload.get("pattern_key") or "").strip()
         if not pattern_key:
             raise ValueError("Pattern.pattern_key is required.")
-        agent_namespace = payload.get("agent_namespace")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
 
         def _find_existing() -> Any:
-            query = self._schema_client().table("patterns").select("*").eq("pattern_key", pattern_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.limit(1).execute()
+            return (
+                self._schema_client()
+                .table("patterns")
+                .select("*")
+                .eq("pattern_key", pattern_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
 
         try:
             response = await self._run(_find_existing)
@@ -1629,12 +1672,14 @@ class SupabaseTransport:
             return False
 
         def _delete() -> Any:
-            query = self._schema_client().table("patterns").delete().eq("pattern_key", normalized_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.execute()
+            return (
+                self._schema_client()
+                .table("patterns")
+                .delete()
+                .eq("pattern_key", normalized_key)
+                .eq("agent_namespace", _resolved_agent_namespace(agent_namespace))
+                .execute()
+            )
 
         try:
             await self._run(_delete)
@@ -1646,19 +1691,22 @@ class SupabaseTransport:
         return True
 
     async def upsert_commitment(self, commitment: Commitment) -> Commitment:
-        payload = _serialize_value(commitment.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(commitment.model_dump(exclude_none=True)))
         commitment_key = str(payload.get("commitment_key") or "").strip()
         if not commitment_key:
             raise ValueError("Commitment.commitment_key is required.")
-        agent_namespace = payload.get("agent_namespace")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
 
         def _find_existing() -> Any:
-            query = self._schema_client().table("commitments").select("*").eq("commitment_key", commitment_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.limit(1).execute()
+            return (
+                self._schema_client()
+                .table("commitments")
+                .select("*")
+                .eq("commitment_key", commitment_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
 
         try:
             response = await self._run(_find_existing)
@@ -1715,19 +1763,22 @@ class SupabaseTransport:
         return commitments[:limit]
 
     async def upsert_correction(self, correction: Correction) -> Correction:
-        payload = _serialize_value(correction.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(correction.model_dump(exclude_none=True)))
         correction_key = str(payload.get("correction_key") or "").strip()
         if not correction_key:
             raise ValueError("Correction.correction_key is required.")
-        agent_namespace = payload.get("agent_namespace")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
 
         def _find_existing() -> Any:
-            query = self._schema_client().table("corrections").select("*").eq("correction_key", correction_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.limit(1).execute()
+            return (
+                self._schema_client()
+                .table("corrections")
+                .select("*")
+                .eq("correction_key", correction_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
 
         try:
             response = await self._run(_find_existing)
@@ -1782,19 +1833,22 @@ class SupabaseTransport:
         return corrections[:limit]
 
     async def upsert_session_handoff(self, handoff: SessionHandoff) -> SessionHandoff:
-        payload = _serialize_value(handoff.model_dump(exclude_none=True))
+        payload = _ensure_payload_agent_namespace(_serialize_value(handoff.model_dump(exclude_none=True)))
         handoff_key = str(payload.get("handoff_key") or "").strip()
         if not handoff_key:
             raise ValueError("SessionHandoff.handoff_key is required.")
-        agent_namespace = payload.get("agent_namespace")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
 
         def _find_existing() -> Any:
-            query = self._schema_client().table("session_handoffs").select("*").eq("handoff_key", handoff_key)
-            if agent_namespace is None:
-                query = query.is_("agent_namespace", "null")
-            else:
-                query = query.eq("agent_namespace", agent_namespace)
-            return query.limit(1).execute()
+            return (
+                self._schema_client()
+                .table("session_handoffs")
+                .select("*")
+                .eq("handoff_key", handoff_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
 
         try:
             response = await self._run(_find_existing)
