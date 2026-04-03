@@ -38,6 +38,13 @@ def _normalize_memory_session_id(session_id: str | None) -> str | None:
         return str(uuid5(_MEMORY_LIVE_SESSION_NAMESPACE, value))
 
 
+def _normalize_agent_namespace(agent_identity: str | None) -> str:
+    value = str(agent_identity or "").strip().lower()
+    if value in {"", "primary"}:
+        return "default"
+    return value
+
+
 def _hermes_home_path(hermes_home: str | None = None) -> Path:
     return Path(hermes_home or os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
 
@@ -225,7 +232,7 @@ class AtlasMemoryProvider(MemoryProvider):
         self._session_id = ""
         self._memory_session_id: str | None = None
         self._platform = "local"
-        self._agent_namespace = "main"
+        self._agent_namespace = "default"
         self._started_at = _utcnow_iso()
         self._model: str | None = None
         self._disabled = False
@@ -236,6 +243,17 @@ class AtlasMemoryProvider(MemoryProvider):
     @property
     def name(self) -> str:
         return "atlas"
+
+    def system_prompt_block(self) -> str:
+        return (
+            "# Atlas Memory\n"
+            "Atlas injects retrieved cross-session memory directly alongside the current user turn.\n"
+            "When an Atlas memory block is present, treat it as the primary retrieved evidence for\n"
+            "continuity, prior conversations, past work, active state, and long-term user context.\n"
+            "Do not say memory is empty, unavailable, or unprocessed if the Atlas block already contains\n"
+            "relevant evidence. Answer from that evidence first, and only express uncertainty when the\n"
+            "Atlas block is actually empty or clearly inconclusive.\n"
+        )
 
     def is_available(self) -> bool:
         atlas_root = _atlas_root()
@@ -312,7 +330,7 @@ class AtlasMemoryProvider(MemoryProvider):
         self._session_id = str(session_id or "").strip()
         self._memory_session_id = _normalize_memory_session_id(self._session_id)
         self._platform = str(kwargs.get("platform") or "local")
-        self._agent_namespace = str(kwargs.get("agent_identity") or "main")
+        self._agent_namespace = _normalize_agent_namespace(kwargs.get("agent_identity"))
         self._started_at = _utcnow_iso()
         self._model = kwargs.get("model")
         self._bridge = _AtlasBridgeClient(hermes_home=hermes_home)
@@ -345,7 +363,7 @@ class AtlasMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.warning("Atlas memory prefetch failed: %s", exc)
             return ""
-        return str(result.get("context") or "").strip()
+        return self._format_prefetch_context(query, str(result.get("context") or "").strip())
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         if self._disabled or self._sync_queue is None:
@@ -437,6 +455,18 @@ class AtlasMemoryProvider(MemoryProvider):
             finally:
                 if self._sync_queue is not None:
                     self._sync_queue.task_done()
+
+    def _format_prefetch_context(self, query: str, context: str) -> str:
+        if not context:
+            return ""
+        return (
+            "## Atlas Memory Recall\n"
+            "Use the retrieved memory below as primary evidence for this user message.\n"
+            f"Current user message: {query.strip()}\n"
+            "If this block already answers the question, answer directly from it and do not claim you\n"
+            "cannot remember.\n\n"
+            f"{context}"
+        )
 
 
 def register(ctx) -> None:
