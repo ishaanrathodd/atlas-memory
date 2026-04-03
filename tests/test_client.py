@@ -342,6 +342,18 @@ async def test_store_messages_batch_accepts_none_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_preserves_arbitrary_platform_name() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+
+    session = await client.start_session(platform="signal")
+    episode = await client.store_message(str(session.id), "user", "Checking Signal continuity.", platform="signal")
+
+    assert session.platform.value == "signal"
+    assert episode.platform.value == "signal"
+
+
+@pytest.mark.asyncio
 async def test_store_messages_batch_drops_tool_and_blank_messages() -> None:
     transport = InMemoryTransport()
     client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())

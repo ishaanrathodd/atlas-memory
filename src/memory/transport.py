@@ -392,6 +392,11 @@ def _is_missing_relation_error(exc: Exception, relation_name: str) -> bool:
     )
 
 
+def _is_platform_enum_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "invalid input value for enum platform" in message or "invalid input value for enum memory.platform" in message
+
+
 _UNKNOWN_COLUMN_PATTERNS = (
     re.compile(r"could not find the '([^']+)' column", re.IGNORECASE),
     re.compile(r"column\s+[a-zA-Z_][a-zA-Z0-9_]*\.([a-zA-Z_][a-zA-Z0-9_]*)\s+does not exist", re.IGNORECASE),
@@ -705,6 +710,8 @@ class SupabaseTransport:
                 response = await self._run(lambda: self._schema_client().table("sessions").insert(dict(working)).execute())
                 return response, dropped
             except Exception as exc:
+                if self._apply_session_platform_fallback(working, exc):
+                    continue
                 column = _extract_unknown_column(exc)
                 if not self._drop_unsupported_session_column(working, exc, operation="insert_session"):
                     raise
@@ -721,6 +728,8 @@ class SupabaseTransport:
                 )
                 return response, dropped
             except Exception as exc:
+                if self._apply_session_platform_fallback(working, exc):
+                    continue
                 column = _extract_unknown_column(exc)
                 if not self._drop_unsupported_session_column(working, exc, operation="update_session"):
                     raise
@@ -736,6 +745,8 @@ class SupabaseTransport:
                 response = await self._run(lambda: self._schema_client().table(table).insert(dict(working)).execute())
                 return response, dropped
             except Exception as exc:
+                if self._apply_record_platform_fallback(working, exc, table=table):
+                    continue
                 column = _extract_unknown_column(exc)
                 if not self._drop_unsupported_column(working, exc, table=table, operation=operation):
                     raise
@@ -759,12 +770,42 @@ class SupabaseTransport:
                 )
                 return response, dropped
             except Exception as exc:
+                if self._apply_record_platform_fallback(working, exc, table=table):
+                    continue
                 column = _extract_unknown_column(exc)
                 if not self._drop_unsupported_column(working, exc, table=table, operation=operation):
                     raise
                 if column and column in payload:
                     dropped[column] = payload[column]
         return None, dropped
+
+    def _apply_session_platform_fallback(self, working: dict[str, Any], exc: Exception) -> bool:
+        if not _is_platform_enum_error(exc):
+            return False
+        actual_platform = str(working.get("platform") or "").strip()
+        if not actual_platform or actual_platform == "other":
+            return False
+        model_config = working.get("model_config")
+        if not isinstance(model_config, dict):
+            model_config = {}
+        model_config.setdefault("source_platform", actual_platform)
+        working["model_config"] = model_config
+        working["platform"] = "other"
+        return True
+
+    def _apply_record_platform_fallback(self, working: dict[str, Any], exc: Exception, *, table: str) -> bool:
+        if table != "episodes" or not _is_platform_enum_error(exc):
+            return False
+        actual_platform = str(working.get("platform") or "").strip()
+        if not actual_platform or actual_platform == "other":
+            return False
+        metadata = working.get("message_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata.setdefault("source_platform", actual_platform)
+        working["message_metadata"] = metadata
+        working["platform"] = "other"
+        return True
 
     async def _fetch_row(self, table: str, record_id: str) -> dict[str, Any] | None:
         response = await self._run(
@@ -994,35 +1035,39 @@ class SupabaseTransport:
         days_back: int = 30,
         agent_namespace: str | None = None,
     ) -> list[Episode]:
-        if self.embedding_provider is None:
-            raise ValueError("SupabaseTransport.search_episodes requires an embedding provider.")
-        query_embedding = await self.embedding_provider.embed_text(query)
+        query_embedding: list[float] | None = None
+        if self.embedding_provider is not None:
+            try:
+                query_embedding = await self.embedding_provider.embed_text(query)
+            except Exception as exc:
+                logger.debug("search_episodes embedding failed; continuing with lexical fallback: %s", exc)
         vector_episodes: list[Episode] = []
-        try:
-            response = await self._run(
-                lambda: self._schema_rpc(
-                    "search_episodes",
-                    {
-                        "query_embedding": _vector_to_pg(query_embedding),
-                        "match_count": limit,
-                        "platform_filter": platform,
-                        "days_back": days_back,
-                        "min_emotional_intensity": 0.0,
-                    },
-                ).execute()
-            )
-            episode_ids = [
-                str(item["id"])
-                for item in _response_rows(response)
-                if isinstance(item, dict) and item.get("id")
-            ]
-            if episode_ids:
-                vector_episodes = _filter_records_by_agent_namespace(
-                    await self._fetch_episodes_by_ids(episode_ids),
-                    agent_namespace,
+        if query_embedding is not None:
+            try:
+                response = await self._run(
+                    lambda: self._schema_rpc(
+                        "search_episodes",
+                        {
+                            "query_embedding": _vector_to_pg(query_embedding),
+                            "match_count": limit,
+                            "platform_filter": platform,
+                            "days_back": days_back,
+                            "min_emotional_intensity": 0.0,
+                        },
+                    ).execute()
                 )
-        except Exception as exc:
-            logger.debug("search_episodes RPC failed; falling back to recent episode scan: %s", exc)
+                episode_ids = [
+                    str(item["id"])
+                    for item in _response_rows(response)
+                    if isinstance(item, dict) and item.get("id")
+                ]
+                if episode_ids:
+                    vector_episodes = _filter_records_by_agent_namespace(
+                        await self._fetch_episodes_by_ids(episode_ids),
+                        agent_namespace,
+                    )
+            except Exception as exc:
+                logger.debug("search_episodes RPC failed; falling back to recent episode scan: %s", exc)
         lexical_episodes = await self._lexical_episode_search(
             query=query,
             limit=limit,

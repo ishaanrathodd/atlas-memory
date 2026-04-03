@@ -72,3 +72,19 @@ def test_emotion_profile_normalizes_scores() -> None:
 
     assert profile.scores == {"joy": 1.0, "fear": 0.5}
     assert profile.intensity == 1.0
+
+
+def test_platform_accepts_arbitrary_source_name() -> None:
+    now = datetime.now(timezone.utc)
+    session = Session(platform="signal", started_at=now)
+    episode = Episode(
+        session_id=uuid4(),
+        role=EpisodeRole.USER,
+        content="Hey from Signal",
+        content_hash="hash",
+        platform="signal",
+        message_timestamp=now,
+    )
+
+    assert session.platform.value == "signal"
+    assert episode.platform.value == "signal"

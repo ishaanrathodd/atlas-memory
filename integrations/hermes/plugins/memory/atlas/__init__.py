@@ -124,11 +124,8 @@ def _build_runtime_env(hermes_home: str | None = None) -> dict[str, str]:
         env["MEMORY_SUPABASE_KEY"] = env["SUPABASE_SERVICE_KEY"]
     if not env.get("MEMORY_SUPABASE_URL") and env.get("SUPABASE_URL"):
         env["MEMORY_SUPABASE_URL"] = env["SUPABASE_URL"]
-    if not env.get("MEMORY_OPENAI_API_KEY"):
-        for alias_key in ("OPENAI_API_KEY", "GLM_API_KEY", "VOICE_TOOLS_OPENAI_KEY"):
-            if env.get(alias_key):
-                env["MEMORY_OPENAI_API_KEY"] = env[alias_key]
-                break
+    if not env.get("MEMORY_OPENAI_API_KEY") and env.get("OPENAI_API_KEY"):
+        env["MEMORY_OPENAI_API_KEY"] = env["OPENAI_API_KEY"]
 
     return env
 

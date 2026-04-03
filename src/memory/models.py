@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+import re
 from typing import Any
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import core_schema
 
 VECTOR_DIMENSIONS = 512
 
@@ -46,6 +48,33 @@ class Platform(str, Enum):
     LOCAL = "local"
     DISCORD = "discord"
     OTHER = "other"
+
+
+class PlatformName(str):
+    @property
+    def value(self) -> str:
+        return str(self)
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, _source_type: Any, _handler: Any) -> core_schema.CoreSchema:
+        return core_schema.no_info_after_validator_function(cls, core_schema.str_schema())
+
+
+_PLATFORM_SEP_RE = re.compile(r"[^a-z0-9._-]+")
+
+
+def normalize_platform(value: str | Platform | PlatformName | None) -> PlatformName:
+    if isinstance(value, Platform):
+        return PlatformName(value.value)
+    if isinstance(value, PlatformName):
+        value = str(value)
+    lowered = str(value or "").strip().lower()
+    if lowered in {"", "cli", "terminal"}:
+        return PlatformName(Platform.LOCAL.value)
+    normalized = _PLATFORM_SEP_RE.sub("-", lowered).strip("-")
+    if not normalized:
+        return PlatformName(Platform.LOCAL.value)
+    return PlatformName(normalized)
 
 
 class FactOperation(str, Enum):
@@ -152,6 +181,7 @@ class MemoryBaseModel(BaseModel):
         from_attributes=True,
         populate_by_name=True,
         extra="ignore",
+        arbitrary_types_allowed=True,
     )
 
 
@@ -198,7 +228,7 @@ class Episode(MemoryBaseModel):
     content: str
     content_hash: str
     embedding: list[float] | None = None
-    platform: Platform = Platform.LOCAL
+    platform: PlatformName = Field(default_factory=lambda: PlatformName(Platform.LOCAL.value))
     message_metadata: dict[str, Any] = Field(default_factory=dict)
     emotions: dict[str, float] = Field(default_factory=dict)
     dominant_emotion: str | None = None
@@ -211,11 +241,16 @@ class Episode(MemoryBaseModel):
     def validate_embedding(cls, value: list[float] | None) -> list[float] | None:
         return _normalize_vector(value, field_name="embedding")
 
+    @field_validator("platform", mode="before")
+    @classmethod
+    def validate_platform(cls, value: str | Platform | PlatformName | None) -> PlatformName:
+        return normalize_platform(value)
+
 
 class Session(MemoryBaseModel):
     id: UUID | None = None
     agent_namespace: str | None = None
-    platform: Platform = Platform.LOCAL
+    platform: PlatformName = Field(default_factory=lambda: PlatformName(Platform.LOCAL.value))
     legacy_session_id: str | None = None
     title: str | None = None
     parent_session_id: UUID | None = None
@@ -258,6 +293,11 @@ class Session(MemoryBaseModel):
     @classmethod
     def validate_summary_embedding(cls, value: list[float] | None) -> list[float] | None:
         return _normalize_vector(value, field_name="summary_embedding")
+
+    @field_validator("platform", mode="before")
+    @classmethod
+    def validate_platform(cls, value: str | Platform | PlatformName | None) -> PlatformName:
+        return normalize_platform(value)
 
     @field_validator("session_model_config", mode="before")
     @classmethod

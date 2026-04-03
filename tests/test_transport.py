@@ -119,6 +119,11 @@ class FakeSupabaseClient:
         return FakeQuery(self.rpc_responses.get(name, []))
 
 
+class BrokenEmbeddingProvider:
+    async def embed_text(self, text: str) -> list[float]:
+        raise RuntimeError("embedding backend unavailable")
+
+
 @pytest.mark.asyncio
 async def test_transport_uses_memory_schema_for_crud() -> None:
     now = datetime.now(timezone.utc)
@@ -558,6 +563,93 @@ async def test_transport_search_episodes_falls_back_to_query_ranked_scan(monkeyp
 
     assert len(episodes) >= 1
     assert episodes[0].content == "this mentions fallback query exactly"
+
+
+@pytest.mark.asyncio
+async def test_transport_search_episodes_survives_embedding_failure() -> None:
+    now = datetime.now(timezone.utc)
+    fake_client = FakeSupabaseClient(
+        {
+            "episodes": FakeQuery(
+                [
+                    {
+                        "id": str(uuid4()),
+                        "session_id": str(uuid4()),
+                        "role": "user",
+                        "content": "we worked on signal memory recall yesterday",
+                        "content_hash": "hash",
+                        "embedding": _vector_to_pg(_zero_vector()),
+                        "platform": "signal",
+                        "message_metadata": {},
+                        "emotions": {},
+                        "dominant_emotion": None,
+                        "emotional_intensity": 0.0,
+                        "message_timestamp": now.isoformat(),
+                    }
+                ]
+            )
+        }
+    )
+    transport = SupabaseTransport(client=fake_client, embedding_provider=BrokenEmbeddingProvider())
+
+    episodes = await transport.search_episodes("signal recall yesterday", limit=3, platform=None, days_back=7)
+
+    assert len(episodes) == 1
+    assert episodes[0].platform.value == "signal"
+    assert fake_client.schema_rpc_calls == []
+
+
+@pytest.mark.asyncio
+async def test_transport_insert_session_retries_unknown_platform_as_other() -> None:
+    now = datetime.now(timezone.utc)
+    session_id = str(uuid4())
+    sessions_query = FakeQuery(
+        execute_side_effects=[
+            Exception('invalid input value for enum platform: "signal"'),
+            [{"id": session_id, "platform": "other", "started_at": now.isoformat(), "topics": [], "dominant_emotions": [], "dominant_emotion_counts": {}, "message_count": 0, "user_message_count": 0, "tool_call_count": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0, "model_config": {"source_platform": "signal"}}],
+        ]
+    )
+    fake_client = FakeSupabaseClient({"sessions": sessions_query})
+    transport = SupabaseTransport(client=fake_client, embedding_provider=MockEmbeddingProvider())
+
+    stored = await transport.insert_session(Session(id=session_id, platform="signal", started_at=now))
+
+    assert stored.platform.value == "other"
+    assert stored.session_model_config["source_platform"] == "signal"
+
+
+@pytest.mark.asyncio
+async def test_transport_insert_episode_retries_unknown_platform_as_other() -> None:
+    now = datetime.now(timezone.utc)
+    episode_id = str(uuid4())
+    session_id = str(uuid4())
+    episodes_query = FakeQuery(
+        execute_side_effects=[
+            Exception('invalid input value for enum platform: "signal"'),
+            [{"id": episode_id, "session_id": session_id, "role": "user", "content": "hello", "content_hash": "hash", "embedding": None, "platform": "other", "message_metadata": {"source_platform": "signal"}, "emotions": {}, "dominant_emotion": None, "emotional_intensity": 0.0, "message_timestamp": now.isoformat()}],
+        ]
+    )
+    fake_client = FakeSupabaseClient({"episodes": episodes_query})
+    transport = SupabaseTransport(client=fake_client, embedding_provider=MockEmbeddingProvider())
+
+    stored = await transport.insert_episode(
+        Episode(
+            id=episode_id,
+            session_id=session_id,
+            role=EpisodeRole.USER,
+            content="hello",
+            content_hash="hash",
+            embedding=None,
+            platform="signal",
+            message_metadata={},
+            emotions={},
+            emotional_intensity=0.0,
+            message_timestamp=now,
+        )
+    )
+
+    assert stored.platform.value == "other"
+    assert stored.message_metadata["source_platform"] == "signal"
 
 
 @pytest.mark.asyncio

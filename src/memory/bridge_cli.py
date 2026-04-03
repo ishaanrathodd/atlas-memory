@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from memory.daemon import build_client, close_client_resources, load_hermes_env
-from memory.models import Platform, Session
+from memory.models import Session, normalize_platform
 from memory.recall import (
     delete_session,
     export_sessions,
@@ -59,7 +59,7 @@ async def _ensure_live_session(
     session = Session(
         id=UUID(memory_session_id),
         agent_namespace=agent_namespace,
-        platform=Platform(platform),
+        platform=normalize_platform(platform),
         legacy_session_id=hermes_session_id,
         started_at=_parse_started_at(started_at),
         model=model,

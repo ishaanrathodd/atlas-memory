@@ -10,8 +10,6 @@ create schema if not exists memory;
 alter type if exists atlas.fact_category set schema memory;
 alter type if exists atlas.fact_operation set schema memory;
 alter type if exists atlas.message_role set schema memory;
-alter type if exists atlas.platform set schema memory;
-
 alter table if exists atlas.sessions set schema memory;
 alter table if exists atlas.episodes set schema memory;
 alter table if exists atlas.facts set schema memory;
@@ -83,7 +81,17 @@ order by e.message_timestamp desc;
 
 drop function if exists atlas.touch_fact(uuid);
 drop function if exists atlas.search_facts(memory.fact_category, text, integer);
+drop function if exists atlas.search_episodes(vector, integer, text, integer, real);
 drop function if exists atlas.search_episodes(vector, integer, memory.platform, integer, real);
+
+alter table if exists memory.sessions
+    alter column platform type text using platform::text,
+    alter column platform set default 'local';
+alter table if exists memory.episodes
+    alter column platform type text using platform::text,
+    alter column platform set default 'local';
+
+drop type if exists memory.platform;
 
 create or replace function memory.touch_fact(fact_id uuid)
 returns void
@@ -119,7 +127,7 @@ $function$;
 create or replace function memory.search_episodes(
     query_embedding vector,
     match_count integer default 20,
-    platform_filter memory.platform default null::memory.platform,
+    platform_filter text default null,
     days_back integer default 30,
     min_emotional_intensity real default 0.0
 )
@@ -127,7 +135,7 @@ returns table(
     id uuid,
     content text,
     role memory.message_role,
-    platform memory.platform,
+    platform text,
     similarity real,
     emotions jsonb,
     dominant_emotion text,

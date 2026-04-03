@@ -63,7 +63,8 @@ def _apply_env_aliases() -> None:
         "MEMORY_DEFAULT_PLATFORM": "MEMORY_DEFAULT_PLATFORM",
         "MEMORY_SUPABASE_URL": "SUPABASE_URL",
         "MEMORY_SUPABASE_KEY": "SUPABASE_SERVICE_KEY",
-        "OPENAI_API_KEY": "GLM_API_KEY",
+        "MEMORY_OPENAI_API_KEY": "OPENAI_API_KEY",
+        "MEMORY_OPENAI_BASE_URL": "OPENAI_BASE_URL",
     }
     for target, source in aliases.items():
         if not os.getenv(target) and os.getenv(source):
@@ -71,23 +72,11 @@ def _apply_env_aliases() -> None:
 
     os.environ.setdefault("HERMES_HOME", str(Path(os.getenv("HERMES_HOME", str(DEFAULT_HERMES_HOME))).expanduser()))
     os.environ.setdefault("MEMORY_SUPABASE_URL", os.getenv("MEMORY_SUPABASE_URL", "https://zopqdjmvbokconktqexf.supabase.co"))
-    os.environ.setdefault("MEMORY_OPENAI_BASE_URL", os.getenv("MEMORY_OPENAI_BASE_URL", DEFAULT_GLM_BASE_URL))
+    os.environ.setdefault("MEMORY_OPENAI_BASE_URL", os.getenv("MEMORY_OPENAI_BASE_URL", "https://api.openai.com/v1"))
     os.environ.setdefault("MEMORY_DEFAULT_PLATFORM", os.getenv("MEMORY_DEFAULT_PLATFORM", "telegram"))
     os.environ.setdefault("MEMORY_SUPABASE_URL", "https://zopqdjmvbokconktqexf.supabase.co")
-    os.environ.setdefault("MEMORY_OPENAI_BASE_URL", DEFAULT_GLM_BASE_URL)
+    os.environ.setdefault("MEMORY_OPENAI_BASE_URL", "https://api.openai.com/v1")
     os.environ.setdefault("MEMORY_DEFAULT_PLATFORM", "telegram")
-
-    # If no memory embedding key is set, try VOICE_TOOLS_OPENAI_KEY for embeddings
-    if not os.getenv("MEMORY_OPENAI_API_KEY") and not os.getenv("MEMORY_OPENAI_API_KEY"):
-        voice_key = os.getenv("VOICE_TOOLS_OPENAI_KEY")
-        if voice_key:
-            os.environ["MEMORY_OPENAI_API_KEY"] = voice_key
-            os.environ["MEMORY_OPENAI_API_KEY"] = voice_key
-            # Use OpenAI's endpoint for embeddings when using the voice key
-            if not os.getenv("MEMORY_OPENAI_BASE_URL") or os.getenv("MEMORY_OPENAI_BASE_URL") == DEFAULT_GLM_BASE_URL:
-                os.environ["MEMORY_OPENAI_BASE_URL"] = "https://api.openai.com/v1"
-            if not os.getenv("MEMORY_OPENAI_BASE_URL") or os.getenv("MEMORY_OPENAI_BASE_URL") == DEFAULT_GLM_BASE_URL:
-                os.environ["MEMORY_OPENAI_BASE_URL"] = "https://api.openai.com/v1"
 
 
 def load_hermes_env(hermes_home: str | Path | None = None) -> dict[str, str]:

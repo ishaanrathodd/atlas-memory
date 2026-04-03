@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
@@ -35,12 +36,15 @@ from memory.models import (
     Pattern,
     PatternType,
     Platform,
+    normalize_platform,
     SessionHandoff,
     Session,
     TimelineEvent,
     TimelineEventKind,
 )
 from memory.transport import MemoryTransport
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -69,10 +73,26 @@ class MemoryClient:
         self.embedding = embedding
         self.emotions = emotions
 
+    async def _safe_embed_text(self, text: str) -> list[float] | None:
+        try:
+            return await self.embedding.embed_text(text)
+        except Exception as exc:
+            logger.warning("Memory embedding unavailable for single text; continuing without vector: %s", exc)
+            return None
+
+    async def _safe_embed_texts(self, texts: list[str]) -> list[list[float] | None]:
+        if not texts:
+            return []
+        try:
+            return await self.embedding.embed_texts(texts)
+        except Exception as exc:
+            logger.warning("Memory embeddings unavailable for batch; continuing without vectors: %s", exc)
+            return [None] * len(texts)
+
     async def start_session(self, platform: str = "local", agent_namespace: str | None = None) -> Session:
         session = Session(
             agent_namespace=agent_namespace,
-            platform=Platform(platform),
+            platform=normalize_platform(platform),
             started_at=_utcnow(),
             message_count=0,
             user_message_count=0,
@@ -86,7 +106,7 @@ class MemoryClient:
         updates: dict[str, Any] = {"ended_at": _utcnow()}
         if summary is not None:
             updates["summary"] = summary
-            updates["summary_embedding"] = await self.embedding.embed_text(summary)
+            updates["summary_embedding"] = await self._safe_embed_text(summary)
         return await self.transport.update_session(session_id, updates)
 
     async def delete_session(self, session_id: str) -> bool:
@@ -100,7 +120,7 @@ class MemoryClient:
         platform: str = "local",
         agent_namespace: str | None = None,
     ) -> Episode:
-        embedding = await self.embedding.embed_text(content)
+        embedding = await self._safe_embed_text(content)
         emotion_profile = self.emotions.analyze(content)
         episode = Episode(
             session_id=session_id,
@@ -109,7 +129,7 @@ class MemoryClient:
             content=content,
             content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
             embedding=embedding,
-            platform=Platform(platform),
+            platform=normalize_platform(platform),
             message_metadata={},
             emotions=emotion_profile.scores,
             dominant_emotion=emotion_profile.dominant_emotion,
@@ -139,7 +159,7 @@ class MemoryClient:
         if not normalized_messages:
             return []
         contents = [message["content"] for message in normalized_messages]
-        embeddings = await self.embedding.embed_texts(contents)
+        embeddings = await self._safe_embed_texts(contents)
         episodes: list[Episode] = []
         for message, embedding in zip(normalized_messages, embeddings, strict=True):
             emotion_profile = self.emotions.analyze(message["content"])
@@ -152,7 +172,7 @@ class MemoryClient:
                     content=message["content"],
                     content_hash=hashlib.sha256(message["content"].encode("utf-8")).hexdigest(),
                     embedding=embedding,
-                    platform=Platform(str(message.get("platform", platform))),
+                    platform=normalize_platform(str(message.get("platform", platform))),
                     message_metadata=dict(message_metadata),
                     emotions=emotion_profile.scores,
                     dominant_emotion=emotion_profile.dominant_emotion,

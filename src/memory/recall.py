@@ -9,6 +9,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from memory.client import MemoryClient
 from memory.transport import _agent_namespace_matches
+from memory.models import normalize_platform
 
 _SESSION_DAYS_BACK = 3650
 _LEGACY_SESSION_ID_RE = re.compile(r"^\d{8}_\d{6}_[A-Za-z0-9]+$")
@@ -28,11 +29,9 @@ def format_timestamp(ts: datetime | str | None) -> str:
 def normalize_platform_filter(platform: str | None) -> str | None:
     if not platform:
         return None
-    lowered = str(platform).strip().lower()
-    if lowered == "cli":
-        return "local"
-    if lowered in {"local", "telegram", "discord", "whatsapp"}:
-        return lowered
+    normalized = str(normalize_platform(platform))
+    if normalized in {"local", "telegram", "discord", "whatsapp", "other"}:
+        return normalized
     return None
 
 
