@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Sequence
 
-from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, Pattern, Session, TimelineEvent
+from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, Pattern, Session, SessionHandoff, TimelineEvent
 from memory.transport import (
     MemoryTransport,
     _looks_like_operational_content,
@@ -1205,11 +1205,21 @@ def _continuity_tone_line(previous_session: Session | None, previous_episodes: l
     strongest = None
     if user_episodes:
         strongest = max(user_episodes, key=lambda episode: float(episode.emotional_intensity or 0.0))
-    if previous_session and previous_session.dominant_emotions and strongest is not None:
-        if float(strongest.emotional_intensity or 0.0) >= 0.6:
-            emotions = [emotion.strip() for emotion in previous_session.dominant_emotions if str(emotion or "").strip()]
-            if emotions:
-                return f"Last tone: {', '.join(emotions[:2])}"
+    if previous_session and previous_session.dominant_emotions:
+        emotions = [emotion.strip() for emotion in previous_session.dominant_emotions if str(emotion or "").strip()]
+        meaningful_user_turn_exists = any(
+            _is_meaningful_user_carry_forward(
+                episode,
+                prior_summary_exists=bool(previous_session.summary),
+            )
+            for episode in previous_episodes
+            if episode.role == EpisodeRole.USER
+        )
+        if emotions and (
+            (strongest is not None and float(strongest.emotional_intensity or 0.0) >= 0.6)
+            or (strongest is None and meaningful_user_turn_exists)
+        ):
+            return f"Last tone: {', '.join(emotions[:2])}"
     if strongest is None or float(strongest.emotional_intensity or 0.0) < 0.6 or not strongest.dominant_emotion:
         return None
     return f"Last tone: {strongest.dominant_emotion}"
@@ -1238,6 +1248,117 @@ def _build_continuity_handoff_lines(
             continue
         lines.append(line)
     return lines[:4]
+
+
+def _continuity_handoff_lines_from_record(handoff: SessionHandoff | None) -> list[str]:
+    if handoff is None:
+        return []
+    lines: list[str] = []
+    if handoff.last_thread:
+        lines.append(f"Last thread: {_sentence_start(_clean_handoff_text(handoff.last_thread, max_length=200))}")
+    if handoff.carry_forward:
+        lines.append(f"Carry forward: {_sentence_start(_clean_handoff_text(handoff.carry_forward))}")
+    if handoff.assistant_context:
+        lines.append(f"Assistant was helping with: {_sentence_start(_clean_handoff_text(handoff.assistant_context))}")
+    if handoff.emotional_tone:
+        lines.append(f"Last tone: {_normalize_text(handoff.emotional_tone, max_length=80)}")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        normalized = " ".join(line.lower().split())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(line)
+    return deduped[:4]
+
+
+def _strip_continuity_prefix(value: str, prefix: str) -> str:
+    if value.startswith(prefix):
+        return value[len(prefix):].strip()
+    return value.strip()
+
+
+def _session_handoff_confidence(*, has_summary: bool, has_carry: bool, has_assistant: bool, has_tone: bool) -> float:
+    score = 0.55
+    if has_summary:
+        score += 0.2
+    if has_carry:
+        score += 0.1
+    if has_assistant:
+        score += 0.1
+    if has_tone:
+        score += 0.05
+    return min(0.95, score)
+
+
+def build_session_handoff(
+    session: Session,
+    episodes: list[Episode],
+    *,
+    agent_namespace: str | None = None,
+) -> SessionHandoff | None:
+    if session.id is None:
+        return None
+    meaningful_episodes = _meaningful_session_episodes(episodes, [])
+    lines = _build_continuity_handoff_lines(
+        session,
+        meaningful_episodes,
+        active_state_records=[],
+        commitments=[],
+    )
+    if not lines:
+        return None
+
+    last_thread = next(
+        (_strip_continuity_prefix(line, "Last thread:") for line in lines if line.startswith("Last thread:")),
+        "",
+    )
+    carry_forward = next(
+        (_strip_continuity_prefix(line, "Carry forward:") for line in lines if line.startswith("Carry forward:")),
+        None,
+    )
+    if carry_forward is None:
+        carry_forward = next(
+            (_strip_continuity_prefix(line, "Open question:") for line in lines if line.startswith("Open question:")),
+            None,
+        )
+    assistant_context = next(
+        (
+            _strip_continuity_prefix(line, "Assistant was helping with:")
+            for line in lines
+            if line.startswith("Assistant was helping with:")
+        ),
+        None,
+    )
+    emotional_tone = next(
+        (_strip_continuity_prefix(line, "Last tone:") for line in lines if line.startswith("Last tone:")),
+        None,
+    )
+    if not last_thread:
+        return None
+
+    return SessionHandoff(
+        agent_namespace=agent_namespace or session.agent_namespace,
+        session_id=session.id,
+        handoff_key=f"auto:handoff:{session.id}",
+        last_thread=last_thread,
+        carry_forward=carry_forward,
+        assistant_context=assistant_context,
+        emotional_tone=emotional_tone,
+        confidence=_session_handoff_confidence(
+            has_summary=bool(last_thread),
+            has_carry=bool(carry_forward),
+            has_assistant=bool(assistant_context),
+            has_tone=bool(emotional_tone),
+        ),
+        source_episode_ids=[episode.id for episode in meaningful_episodes if episode.id is not None],
+        source_session_ids=[session.id] if session.id is not None else [],
+        last_observed_at=max(
+            [_sort_datetime(session.ended_at or session.started_at)]
+            + [_sort_datetime(episode.message_timestamp) for episode in meaningful_episodes]
+        ),
+    )
 
 
 def _format_recent_handoff(handoff_lines: list[str], fallback_episodes: list[Episode]) -> str:
@@ -1456,6 +1577,11 @@ async def collect_enrichment_payload(
     outcomes_task = transport.list_decision_outcomes(limit=24, agent_namespace=agent_namespace)
     patterns_task = transport.list_patterns(limit=24, agent_namespace=agent_namespace)
     active_state_task = transport.list_active_state(limit=5, agent_namespace=agent_namespace, statuses=["active", "cooling"])
+    session_handoffs_task = transport.list_session_handoffs(
+        limit=3,
+        agent_namespace=agent_namespace,
+        exclude_session_id=active_session_id,
+    )
     relevant_episodes_task = transport.search_episodes(
         query=user_message,
         limit=EPISODE_SEARCH_LIMIT,
@@ -1471,7 +1597,7 @@ async def collect_enrichment_payload(
     )
 
     if session_task is None:
-        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, active_state_records, relevant_episodes, recent_episodes = await asyncio.gather(
+        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, active_state_records, session_handoffs, relevant_episodes, recent_episodes = await asyncio.gather(
             facts_task,
             directives_task,
             commitments_task,
@@ -1480,12 +1606,13 @@ async def collect_enrichment_payload(
             outcomes_task,
             patterns_task,
             active_state_task,
+            session_handoffs_task,
             relevant_episodes_task,
             recent_episodes_task,
         )
         active_session = None
     else:
-        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, active_state_records, relevant_episodes, recent_episodes, active_session = await asyncio.gather(
+        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, active_state_records, session_handoffs, relevant_episodes, recent_episodes, active_session = await asyncio.gather(
             facts_task,
             directives_task,
             commitments_task,
@@ -1494,6 +1621,7 @@ async def collect_enrichment_payload(
             outcomes_task,
             patterns_task,
             active_state_task,
+            session_handoffs_task,
             relevant_episodes_task,
             recent_episodes_task,
             session_task,
@@ -1569,7 +1697,12 @@ async def collect_enrichment_payload(
     handoff_recent_session_id = _recent_session_id_for_handoff(handoff_recent_candidates)
     previous_session: Session | None = None
     previous_session_episodes: list[Episode] = []
-    if handoff_recent_session_id and _continuity_bootstrap_active(active_session, continuity_query=continuity_query):
+    selected_handoff = session_handoffs[0] if session_handoffs else None
+    if (
+        selected_handoff is None
+        and handoff_recent_session_id
+        and _continuity_bootstrap_active(active_session, continuity_query=continuity_query)
+    ):
         previous_session, prior_episodes = await asyncio.gather(
             transport.get_session(handoff_recent_session_id),
             transport.list_episodes_for_session(handoff_recent_session_id, limit=MAX_HANDOFF_EPISODES),
@@ -1595,16 +1728,16 @@ async def collect_enrichment_payload(
     if low_signal_query:
         filtered_recent_episodes = []
 
-    continuity_handoff_lines = (
-        _build_continuity_handoff_lines(
-            previous_session,
-            previous_session_episodes,
-            active_state_records=active_state_records,
-            commitments=commitments,
-        )
-        if _continuity_bootstrap_active(active_session, continuity_query=continuity_query)
-        else []
-    )
+    continuity_handoff_lines = []
+    if _continuity_bootstrap_active(active_session, continuity_query=continuity_query):
+        continuity_handoff_lines = _continuity_handoff_lines_from_record(selected_handoff)
+        if not continuity_handoff_lines:
+            continuity_handoff_lines = _build_continuity_handoff_lines(
+                previous_session,
+                previous_session_episodes,
+                active_state_records=active_state_records,
+                commitments=commitments,
+            )
 
     filtered_timeline_events = [
         event

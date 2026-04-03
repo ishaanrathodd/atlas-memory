@@ -455,3 +455,25 @@ class Correction(MemoryBaseModel):
     @classmethod
     def _coerce_null_correction_lists(cls, v: Any) -> Any:
         return v if v is not None else []
+
+
+class SessionHandoff(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    session_id: UUID
+    handoff_key: str
+    last_thread: str
+    carry_forward: str | None = None
+    assistant_context: str | None = None
+    emotional_tone: str | None = None
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    source_episode_ids: list[UUID] = Field(default_factory=list)
+    source_session_ids: list[UUID] = Field(default_factory=list)
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+    last_observed_at: AwareDatetime
+
+    @field_validator("source_episode_ids", "source_session_ids", mode="before")
+    @classmethod
+    def _coerce_null_session_handoff_lists(cls, v: Any) -> Any:
+        return v if v is not None else []

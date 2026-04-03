@@ -9,7 +9,7 @@ from memory.bridge import MemoryBridge
 from memory.client import MemoryClient
 from memory.embedding import MockEmbeddingProvider
 from memory.emotions import EmotionAnalyzer
-from memory.models import Commitment, Correction, DecisionOutcome, Directive, Episode, Fact, FactHistory, Pattern, Session, TimelineEvent
+from memory.models import Commitment, Correction, DecisionOutcome, Directive, Episode, Fact, FactHistory, Pattern, Session, SessionHandoff, TimelineEvent
 
 
 class MockTransport:
@@ -27,6 +27,7 @@ class MockTransport:
         self.patterns: list[Pattern] = []
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
+        self.session_handoffs: list[SessionHandoff] = []
 
     def _maybe_fail(self, operation: str) -> None:
         if operation in self.fail_ops:
@@ -253,6 +254,29 @@ class MockTransport:
             corrections = [item for item in corrections if item.active]
         corrections.sort(key=lambda item: item.last_observed_at, reverse=True)
         return corrections[:limit]
+
+    async def upsert_session_handoff(self, handoff: SessionHandoff):
+        self._maybe_fail("upsert_session_handoff")
+        self.session_handoffs = [
+            existing
+            for existing in self.session_handoffs
+            if existing.handoff_key != handoff.handoff_key
+        ]
+        self.session_handoffs.append(handoff)
+        return handoff
+
+    async def list_session_handoffs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        exclude_session_id: str | None = None,
+    ):
+        self._maybe_fail("list_session_handoffs")
+        _ = agent_namespace
+        handoffs = sorted(self.session_handoffs, key=lambda item: item.last_observed_at, reverse=True)
+        if exclude_session_id is not None:
+            handoffs = [item for item in handoffs if str(item.session_id) != str(exclude_session_id)]
+        return handoffs[:limit]
 
     async def health_check(self) -> bool:
         self._maybe_fail("health_check")

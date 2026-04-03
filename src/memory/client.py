@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from memory.embedding import EmbeddingProvider
-from memory.enrichment import enrich_context as build_enriched_context
+from memory.enrichment import build_session_handoff, enrich_context as build_enriched_context
 from memory.emotions import EmotionAnalyzer
 from memory.fact_extraction import _content_fingerprint
 from memory.models import (
@@ -35,6 +35,7 @@ from memory.models import (
     Pattern,
     PatternType,
     Platform,
+    SessionHandoff,
     Session,
     TimelineEvent,
     TimelineEventKind,
@@ -696,6 +697,21 @@ class MemoryClient:
             active_session_id=active_session_id,
             agent_namespace=agent_namespace,
         )
+
+    async def refresh_session_handoff(
+        self,
+        session_id: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> SessionHandoff | None:
+        session = await self.transport.get_session(session_id)
+        if session is None:
+            return None
+        episodes = await self.transport.list_episodes_for_session(session_id, limit=12)
+        handoff = build_session_handoff(session, episodes, agent_namespace=agent_namespace)
+        if handoff is None:
+            return None
+        return await self.transport.upsert_session_handoff(handoff)
 
     async def health_check(self) -> bool:
         return await self.transport.health_check()

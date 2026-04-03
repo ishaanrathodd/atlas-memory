@@ -34,6 +34,7 @@ from memory.models import (
     PatternType,
     Platform,
     Session,
+    SessionHandoff,
     TimelineEvent,
     TimelineEventKind,
 )
@@ -61,6 +62,7 @@ class MockTransport:
         self.patterns: list[Pattern] = []
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
+        self.session_handoffs: list[SessionHandoff] = []
         self.last_list_active_state_namespace: str | None | object = "__unset__"
         self.last_list_directives_namespace: str | None | object = "__unset__"
         self.last_list_decision_outcomes_namespace: str | None | object = "__unset__"
@@ -68,6 +70,7 @@ class MockTransport:
         self.last_list_commitments_namespace: str | None | object = "__unset__"
         self.last_list_corrections_namespace: str | None | object = "__unset__"
         self.last_list_timeline_namespace: str | None | object = "__unset__"
+        self.last_list_handoffs_namespace: str | None | object = "__unset__"
 
     async def insert_session(self, session: Session) -> Session:
         if session.id is None:
@@ -261,6 +264,27 @@ class MockTransport:
         self.last_list_corrections_namespace = agent_namespace
         corrections = sorted(self.corrections, key=lambda item: item.last_observed_at, reverse=True)
         return corrections[:limit]
+
+    async def upsert_session_handoff(self, handoff: SessionHandoff):
+        self.session_handoffs = [
+            existing
+            for existing in self.session_handoffs
+            if existing.handoff_key != handoff.handoff_key
+        ]
+        self.session_handoffs.append(handoff)
+        return handoff
+
+    async def list_session_handoffs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        exclude_session_id: str | None = None,
+    ):
+        self.last_list_handoffs_namespace = agent_namespace
+        handoffs = sorted(self.session_handoffs, key=lambda item: item.last_observed_at, reverse=True)
+        if exclude_session_id is not None:
+            handoffs = [item for item in handoffs if str(item.session_id) != str(exclude_session_id)]
+        return handoffs[:limit]
 
     async def health_check(self) -> bool:
         return True
@@ -1221,6 +1245,58 @@ async def test_enrich_context_skips_low_value_last_line_handoff_noise() -> None:
     assert "Carry forward:" not in context
     assert "Assistant was helping with:" not in context
     assert "Last tone:" not in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_prefers_dedicated_session_handoff_record() -> None:
+    client, bridge, transport = _build_client_with_transport()
+    active_session = await bridge.start_conversation("telegram")
+    assert active_session is not None
+
+    previous_session_id = uuid4()
+    transport.session_handoffs = [
+        SessionHandoff(
+            id=uuid4(),
+            agent_namespace="main",
+            session_id=previous_session_id,
+            handoff_key=f"auto:handoff:{previous_session_id}",
+            last_thread="Stabilized Telegram continuity and reply latency after the restart fixes.",
+            carry_forward="Watch the next real user message and confirm replies stay fast.",
+            assistant_context="I moved the hot path off cold subprocesses and onto the warm Atlas bridge worker.",
+            emotional_tone="frustration, relief",
+            confidence=0.92,
+            source_episode_ids=[],
+            source_session_ids=[previous_session_id],
+            last_observed_at=_utcnow() - timedelta(minutes=2),
+        )
+    ]
+    transport.episodes = [
+        Episode(
+            id=uuid4(),
+            session_id=previous_session_id,
+            agent_namespace="main",
+            role=EpisodeRole.USER,
+            content="yo",
+            content_hash=uuid4().hex,
+            embedding=[0.0] * 512,
+            platform=Platform.TELEGRAM,
+            message_timestamp=_utcnow() - timedelta(hours=1),
+        )
+    ]
+
+    context = await enrich_context(
+        transport,
+        "hey",
+        platform="telegram",
+        active_session_id=str(active_session.id),
+        agent_namespace="main",
+    )
+
+    assert "Recent cross-session continuity:" in context
+    assert "Last thread: Stabilized Telegram continuity and reply latency after the restart fixes." in context
+    assert "Carry forward: Watch the next real user message and confirm replies stay fast." in context
+    assert "Assistant was helping with: I moved the hot path off cold subprocesses and onto the warm Atlas bridge worker." in context
+    assert "Last tone: frustration, relief" in context
     assert "yo, what's good?" not in context
     assert "what do uk about me" not in context
 

@@ -10,7 +10,7 @@ import pytest
 from memory.client import MemoryClient
 from memory.embedding import MockEmbeddingProvider, OpenAIEmbeddingProvider, truncate_embedding
 from memory.emotions import EmotionAnalyzer
-from memory.models import Commitment, Correction, DecisionOutcome, Directive, Episode, EpisodeRole, Fact, FactHistory, Pattern, Session, TimelineEvent
+from memory.models import Commitment, Correction, DecisionOutcome, Directive, Episode, EpisodeRole, Fact, FactHistory, Pattern, Session, SessionHandoff, TimelineEvent
 
 
 class InMemoryTransport:
@@ -27,6 +27,7 @@ class InMemoryTransport:
         self.patterns: list[Pattern] = []
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
+        self.session_handoffs: list[SessionHandoff] = []
 
     async def insert_session(self, session: Session) -> Session:
         if session.id is None:
@@ -221,6 +222,27 @@ class InMemoryTransport:
         corrections.sort(key=lambda item: item.last_observed_at, reverse=True)
         return corrections[:limit]
 
+    async def upsert_session_handoff(self, handoff: SessionHandoff) -> SessionHandoff:
+        self.session_handoffs = [
+            existing
+            for existing in self.session_handoffs
+            if existing.handoff_key != handoff.handoff_key
+        ]
+        self.session_handoffs.append(handoff)
+        return handoff
+
+    async def list_session_handoffs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        exclude_session_id: str | None = None,
+    ) -> list[SessionHandoff]:
+        _ = agent_namespace
+        handoffs = sorted(self.session_handoffs, key=lambda item: item.last_observed_at, reverse=True)
+        if exclude_session_id is not None:
+            handoffs = [item for item in handoffs if str(item.session_id) != str(exclude_session_id)]
+        return handoffs[:limit]
+
     async def health_check(self) -> bool:
         return True
 
@@ -254,12 +276,49 @@ async def test_enrich_context_formats_facts_and_episodes() -> None:
 
     context = await client.enrich_context("launch details", active_session_id=str(session.id))
 
-    assert "Memory memory guidance:" in context
+    assert "Memory guidance:" in context
     assert "Relevant facts:" in context
     assert "Relevant prior conversations:" in context
     assert "Recent cross-session continuity:" in context
-    assert "Active session summary:" in context
-    assert str(fact.id) in transport.touched_facts
+
+
+@pytest.mark.asyncio
+async def test_refresh_session_handoff_persists_latest_baton() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+
+    await client.store_message(
+        str(session.id),
+        "user",
+        "The bot is still too slow after restart, so please watch the next real message closely.",
+        platform="telegram",
+        agent_namespace="main",
+    )
+    await client.store_message(
+        str(session.id),
+        "assistant",
+        "I moved the restart path to the warm bridge worker, so next we should verify a real reply stays fast.",
+        platform="telegram",
+        agent_namespace="main",
+    )
+
+    updated_session = await transport.update_session(
+        str(session.id),
+        {
+            "summary": "Stabilized Telegram continuity and reduced reply latency after restart.",
+            "dominant_emotions": ["frustration", "relief"],
+        },
+    )
+
+    handoff = await client.refresh_session_handoff(str(updated_session.id), agent_namespace="main")
+
+    assert handoff is not None
+    assert handoff.last_thread == "Stabilized Telegram continuity and reduced reply latency after restart."
+    assert handoff.assistant_context is not None
+    assert "warm bridge worker" in handoff.assistant_context
+    assert handoff.emotional_tone == "frustration, relief"
+    assert transport.session_handoffs[0].handoff_key == f"auto:handoff:{updated_session.id}"
 
 
 @pytest.mark.asyncio

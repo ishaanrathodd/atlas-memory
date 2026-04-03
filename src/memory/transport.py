@@ -32,6 +32,7 @@ from memory.models import (
     Fact,
     FactHistory,
     Pattern,
+    SessionHandoff,
     Session,
     TimelineEvent,
     VECTOR_DIMENSIONS,
@@ -386,6 +387,8 @@ def _is_missing_relation_error(exc: Exception, relation_name: str) -> bool:
         f"relation \"{relation}\" does not exist" in message
         or f"relation {relation} does not exist" in message
         or f"could not find the '{relation}'" in message
+        or f"could not find the table '{relation}'" in message
+        or f"could not find the table 'memory.{relation}'" in message
     )
 
 
@@ -602,6 +605,15 @@ class MemoryTransport(Protocol):
         agent_namespace: str | None = None,
         active_only: bool = True,
     ) -> list[Correction]: ...
+
+    async def upsert_session_handoff(self, handoff: SessionHandoff) -> SessionHandoff: ...
+
+    async def list_session_handoffs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        exclude_session_id: str | None = None,
+    ) -> list[SessionHandoff]: ...
 
     async def health_check(self) -> bool: ...
 
@@ -1724,6 +1736,81 @@ class SupabaseTransport:
         corrections = _filter_records_by_agent_namespace(corrections, agent_namespace)
         return corrections[:limit]
 
+    async def upsert_session_handoff(self, handoff: SessionHandoff) -> SessionHandoff:
+        payload = _serialize_value(handoff.model_dump(exclude_none=True))
+        handoff_key = str(payload.get("handoff_key") or "").strip()
+        if not handoff_key:
+            raise ValueError("SessionHandoff.handoff_key is required.")
+        agent_namespace = payload.get("agent_namespace")
+
+        def _find_existing() -> Any:
+            query = self._schema_client().table("session_handoffs").select("*").eq("handoff_key", handoff_key)
+            if agent_namespace is None:
+                query = query.is_("agent_namespace", "null")
+            else:
+                query = query.eq("agent_namespace", agent_namespace)
+            return query.limit(1).execute()
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "session_handoffs"):
+                logger.info("Memory session_handoffs table is not available yet; skipping handoff upsert.")
+                return handoff
+            raise
+
+        existing = _first_response_record(response)
+        if existing is not None:
+            payload.setdefault("updated_at", _now_utc().isoformat())
+            response, _ = await self._update_payload(
+                "session_handoffs",
+                str(existing["id"]),
+                payload,
+                operation="upsert_session_handoff",
+            )
+            if response is None:
+                refreshed = await self._fetch_row("session_handoffs", str(existing["id"]))
+                if refreshed is None:
+                    raise LookupError("upsert_session_handoff returned no rows.")
+                return SessionHandoff.model_validate(_normalize_record(refreshed))
+            return SessionHandoff.model_validate(
+                _normalize_record(self._require_record(response, operation="upsert_session_handoff"))
+            )
+
+        response, _ = await self._insert_payload("session_handoffs", payload, operation="insert_session_handoff")
+        return SessionHandoff.model_validate(
+            _normalize_record(self._require_record(response, operation="insert_session_handoff"))
+        )
+
+    async def list_session_handoffs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        exclude_session_id: str | None = None,
+    ) -> list[SessionHandoff]:
+        normalized_exclude = str(exclude_session_id or "").strip()
+
+        def _query() -> Any:
+            query = self._schema_client().table("session_handoffs").select("*")
+            if normalized_exclude:
+                query = query.neq("session_id", normalized_exclude)
+            query = query.order("last_observed_at", desc=True).limit(max(limit * 4, 20))
+            return query.execute()
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "session_handoffs"):
+                logger.info("Memory session_handoffs table is not available yet; returning an empty handoff list.")
+                return []
+            raise
+
+        handoffs = [SessionHandoff.model_validate(_normalize_record(item)) for item in _response_rows(response)]
+        handoffs = _filter_records_by_agent_namespace(handoffs, agent_namespace)
+        if normalized_exclude:
+            handoffs = [handoff for handoff in handoffs if str(handoff.session_id) != normalized_exclude]
+        return handoffs[:limit]
+
     async def health_check(self) -> bool:
         try:
             await self._run(lambda: self._schema_client().table("sessions").select("id").limit(1).execute())
@@ -1904,6 +1991,17 @@ class RemoteTransport:
         agent_namespace: str | None = None,
         active_only: bool = True,
     ) -> list[Correction]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def upsert_session_handoff(self, handoff: SessionHandoff) -> SessionHandoff:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def list_session_handoffs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        exclude_session_id: str | None = None,
+    ) -> list[SessionHandoff]:
         raise NotImplementedError("RemoteTransport is not implemented yet.")
 
     async def health_check(self) -> bool:

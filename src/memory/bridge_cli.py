@@ -315,6 +315,10 @@ async def _run_live_session_append(args: argparse.Namespace) -> dict[str, object
             platform=args.platform,
             agent_namespace=args.agent_namespace,
         )
+        await client.refresh_session_handoff(
+            args.memory_session_id,
+            agent_namespace=args.agent_namespace,
+        )
         return {
             "success": True,
             "backend": "memory",
@@ -352,6 +356,10 @@ async def _run_live_session_end(args: argparse.Namespace) -> dict[str, object]:
                 },
             )
         ended = await client.end_session(args.memory_session_id, summary=summary)
+        await client.refresh_session_handoff(
+            args.memory_session_id,
+            agent_namespace=args.agent_namespace,
+        )
         return {
             "success": True,
             "backend": "memory",

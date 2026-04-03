@@ -112,6 +112,10 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
             platform=str(request.get("platform") or "local"),
             agent_namespace=request.get("agent_namespace"),
         )
+        await client.refresh_session_handoff(
+            str(request.get("memory_session_id") or ""),
+            agent_namespace=request.get("agent_namespace"),
+        )
         return {
             "success": True,
             "result": {
@@ -144,6 +148,10 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
                 },
             )
         ended = await client.end_session(str(request.get("memory_session_id") or ""), summary=summary)
+        await client.refresh_session_handoff(
+            str(request.get("memory_session_id") or ""),
+            agent_namespace=request.get("agent_namespace"),
+        )
         return {
             "success": True,
             "result": {
