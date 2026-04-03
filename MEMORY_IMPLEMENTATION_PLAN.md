@@ -44,6 +44,9 @@ What is already true in live Memory:
 
 What is still actively left:
 
+- restoring Memory as an additive Hermes memory provider instead of a deep runtime fork
+- a polished `atlas` provider setup flow under `hermes memory setup`
+- genericizing extraction and enrichment so Memory adapts to any user over time, not just current talking style
 - live short-range continuity across automatic session rollover
 - a dedicated recent-conversation handoff / baton layer for the last 15-30 messages
 - replacing cron-shaped background consolidation with an always-on event-driven memory curator
@@ -51,6 +54,30 @@ What is still actively left:
 - user-facing forget / revoke / override flows
 - proactive presence / heartbeat behavior
 - optional future multi-profile registry and visibility model
+
+
+## Strategic Direction
+
+Memory should now be treated as a standalone Atlas product with a thin Hermes integration seam.
+
+That means:
+
+- the real memory engine lives in the Atlas repo
+- Hermes built-in memory stays intact
+- Atlas integrates as an external Hermes memory provider
+- user-owned provider code should live outside the Hermes checkout so `hermes update` keeps working cleanly
+
+Current reality check:
+
+- Atlas is **not** already more mature than Honcho, Supermemory, or RetainDB
+- Atlas is only worth continuing if it differentiates on trustworthy personal continuity, not generic memory plumbing
+- genericization is now a first-class requirement; extraction rules cannot be tied to one user's current phrasing, slang, or mood
+
+Practical implication:
+
+- stop pushing more Atlas semantics deep into `hermes-agent`
+- use the upstream memory-provider seam as the stable integration boundary
+- keep plugin UX beautiful enough that a new user can choose `atlas` from `hermes memory setup` and paste credentials without reading source code
 
 
 ## Guiding Constraints
@@ -122,6 +149,95 @@ Desired user experience:
 This should be treated as first-class product behavior, not as an optional later refinement.
 
 
+## Delivery Roadmap
+
+This is the recommended roadmap from `2026-04-03` onward.
+
+### Stage 1: Provider foundation (`1-3 days`)
+
+Goals:
+
+- keep Hermes built-in memory intact
+- expose Atlas as a real external Hermes provider
+- make the plugin discoverable outside the Hermes checkout
+- support a working `hermes memory setup` path for Atlas
+
+Deliverables:
+
+- external `atlas` provider plugin
+- setup flow for Supabase URL/key and schema
+- minimal provider lifecycle: initialize, prefetch, sync-turn, shutdown
+- focused provider discovery and setup tests
+
+### Stage 2: Genericization pass (`2-5 days`)
+
+Goals:
+
+- remove Ishaan-specific production heuristics
+- remove talking-style-dependent phrase patches
+- make extraction and retrieval adapt to new users and future personality drift
+
+Deliverables:
+
+- depersonalized enrichment rules
+- depersonalized outcome/pattern extraction rules
+- tests that use varied fixtures instead of one speaking style
+
+### Stage 3: Live continuity (`3-7 days`)
+
+Goals:
+
+- make automatic session rollover invisible to the user
+- keep short-range baton continuity sharp across sessions
+
+Deliverables:
+
+- dedicated live baton / handoff object
+- recent open-loop carry-forward
+- last-thread bootstrap tuned for new-session startup
+- continuity tests around rollover and recent-thread recall
+
+### Stage 4: Always-on curator (`1-2 weeks`)
+
+Goals:
+
+- replace cron as the primary memory brain
+- keep cost low with heuristic-first event-driven updates
+
+Deliverables:
+
+- hot / warm / cold curation queues
+- cheap per-message state tracking
+- threshold-triggered promotion instead of periodic blind batch work
+- cron retained only as a safety backstop
+
+### Stage 5: Higher-order trust layers (`1-3 weeks`)
+
+Goals:
+
+- deepen Memory without making it hallucination-prone
+
+Deliverables:
+
+- `reflections`
+- forget / revoke / override UX
+- better confidence / uncertainty handling
+- improved operational memory for tasks, meetings, and follow-ups
+
+### Stage 6: Productization (`ongoing`)
+
+Goals:
+
+- make Atlas installable and usable by someone who is not the original builder
+
+Deliverables:
+
+- provider README and setup docs
+- cleaner standalone package/install story
+- migration guides
+- plugin polish for eventual upstream PR or separate distribution
+
+
 ## Current Source-of-Truth Code Paths
 
 These are the main files the redesign will touch.
@@ -148,26 +264,22 @@ These are the main files the redesign will touch.
 
 Build in this order:
 
-1. Profile-safe foundations
-2. `active_state`
-3. stronger session-start bootstrap
-4. `directives`
-5. `timeline_events`
-6. `decision_outcomes`
-7. `patterns`
-8. `commitments`
-9. `corrections`
-10. live continuity + handoff
-11. always-on memory curator
-12. `reflections`
-13. cleanup / pruning / old-table retirement
+1. restore Hermes integration to the upstream memory-provider seam
+2. ship Atlas as a thin external provider
+3. genericize extraction and enrichment
+4. live continuity + handoff
+5. always-on memory curator
+6. `reflections`
+7. forget / revoke / override UX
+8. operational memory polish for tasks / meetings / follow-ups
+9. cleanup / pruning / old-table retirement
 
 This order gives the fastest user-visible gain while keeping the hardest inference layers for later.
 
 Current rollout state:
 
 - phases `0` through `6` below are functionally done and live
-- the next architecture milestone is live continuity + event-driven curation
+- the next architecture milestone is Atlas-as-provider plus live continuity + event-driven curation
 - `reflections` have not started
 - cleanup / quality work is no longer the only focus; operating-model changes now matter too
 
