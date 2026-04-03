@@ -1,0 +1,24 @@
+# Minimal packaged subset of the NRC Word-Emotion Association Lexicon.
+afraid	fear	1
+afraid	sadness	1
+angry	anger	1
+angry	disgust	1
+calm	trust	1
+delighted	joy	1
+delighted	surprise	1
+disgusted	disgust	1
+excited	anticipation	1
+excited	joy	1
+fearful	fear	1
+grief	sadness	1
+happy	joy	1
+happy	trust	1
+hopeful	anticipation	1
+hopeful	trust	1
+love	joy	1
+love	trust	1
+sad	sadness	1
+shocked	surprise	1
+trust	trust	1
+worried	fear	1
+worried	sadness	1
