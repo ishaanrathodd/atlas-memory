@@ -315,15 +315,17 @@ async def _run_live_session_append(args: argparse.Namespace) -> dict[str, object
             platform=args.platform,
             agent_namespace=args.agent_namespace,
         )
-        await client.refresh_session_handoff(
+        curator = await client.curate_live_continuity(
             args.memory_session_id,
             agent_namespace=args.agent_namespace,
+            mode="hot",
         )
         return {
             "success": True,
             "backend": "memory",
             "session_id": args.memory_session_id,
             "count": len(stored),
+            "curator": curator,
             "message": f"Stored {len(stored)} memory live message(s).",
         }
     finally:
@@ -356,14 +358,17 @@ async def _run_live_session_end(args: argparse.Namespace) -> dict[str, object]:
                 },
             )
         ended = await client.end_session(args.memory_session_id, summary=summary)
-        await client.refresh_session_handoff(
+        curator = await client.curate_live_continuity(
             args.memory_session_id,
             agent_namespace=args.agent_namespace,
+            mode="warm",
+            force=True,
         )
         return {
             "success": True,
             "backend": "memory",
             "session_id": str(ended.id or args.memory_session_id),
+            "curator": curator,
             "message": "Memory live session ended.",
         }
     finally:

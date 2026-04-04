@@ -112,9 +112,10 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
             platform=str(request.get("platform") or "local"),
             agent_namespace=request.get("agent_namespace"),
         )
-        await client.refresh_session_handoff(
+        curator = await client.curate_live_continuity(
             str(request.get("memory_session_id") or ""),
             agent_namespace=request.get("agent_namespace"),
+            mode="hot",
         )
         return {
             "success": True,
@@ -123,6 +124,7 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
                 "backend": "memory",
                 "session_id": str(request.get("memory_session_id") or ""),
                 "count": len(stored),
+                "curator": curator,
                 "message": f"Stored {len(stored)} memory live message(s).",
             },
         }
@@ -148,9 +150,11 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
                 },
             )
         ended = await client.end_session(str(request.get("memory_session_id") or ""), summary=summary)
-        await client.refresh_session_handoff(
+        curator = await client.curate_live_continuity(
             str(request.get("memory_session_id") or ""),
             agent_namespace=request.get("agent_namespace"),
+            mode="warm",
+            force=True,
         )
         return {
             "success": True,
@@ -158,6 +162,7 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
                 "success": True,
                 "backend": "memory",
                 "session_id": str(ended.id or request.get("memory_session_id") or ""),
+                "curator": curator,
                 "message": "Memory live session ended.",
             },
         }

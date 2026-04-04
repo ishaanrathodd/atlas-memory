@@ -10,7 +10,7 @@ import pytest
 from memory.client import MemoryClient
 from memory.embedding import MockEmbeddingProvider, OpenAIEmbeddingProvider, truncate_embedding
 from memory.emotions import EmotionAnalyzer
-from memory.models import Commitment, Correction, DecisionOutcome, Directive, Episode, EpisodeRole, Fact, FactHistory, Pattern, Session, SessionHandoff, TimelineEvent
+from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, Directive, Episode, EpisodeRole, Fact, FactHistory, Pattern, Session, SessionHandoff, TimelineEvent
 
 
 class InMemoryTransport:
@@ -537,3 +537,143 @@ def test_emotion_analyzer_detects_dominant_emotion() -> None:
 
     assert profile.dominant_emotion in {"joy", "anticipation"}
     assert profile.intensity > 0.0
+
+
+@pytest.mark.asyncio
+async def test_new_session_prefers_live_baton_continuity() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+
+    previous = await client.start_session(platform="signal", agent_namespace="main")
+    await client.store_message(
+        str(previous.id),
+        "user",
+        "Need to run a real Signal message check after gateway restart and confirm continuity stays intact.",
+        platform="signal",
+        agent_namespace="main",
+    )
+    await client.store_message(
+        str(previous.id),
+        "assistant",
+        "I am helping with restart validation and continuity checks, and I will track what still needs verification.",
+        platform="signal",
+        agent_namespace="main",
+    )
+    await transport.update_session(
+        str(previous.id),
+        {
+            "summary": "Debugged Signal continuity around restart and narrowed the remaining handoff gap.",
+            "dominant_emotions": ["focus", "relief"],
+        },
+    )
+
+    state = ActiveState.model_validate(
+        {
+            "id": str(uuid4()),
+            "agent_namespace": "main",
+            "kind": "open_loop",
+            "title": "Open loop",
+            "content": "Need to run one real Signal reply and verify baton carry-forward after rollover.",
+            "state_key": "auto:open_loop:primary",
+            "status": "active",
+            "confidence": 0.82,
+            "priority_score": 0.9,
+            "valid_from": datetime.now(timezone.utc).isoformat(),
+            "last_observed_at": datetime.now(timezone.utc).isoformat(),
+            "source_episode_ids": [],
+            "source_session_ids": [str(previous.id)],
+            "supporting_fact_ids": [],
+            "tags": ["derived", "open-loop"],
+        }
+    )
+    await transport.upsert_active_state(state)
+    await client.add_commitment(
+        kind="follow_up",
+        statement="I will verify the first post-restart Signal reply and report whether continuity held.",
+        commitment_key="auto:commitment:signal-restart-continuity",
+        first_committed_at=datetime.now(timezone.utc),
+        last_observed_at=datetime.now(timezone.utc),
+        agent_namespace="main",
+    )
+    handoff = await client.refresh_session_handoff(str(previous.id), agent_namespace="main")
+    assert handoff is not None
+    assert handoff.carry_forward is not None
+
+    current = await client.start_session(platform="signal", agent_namespace="main")
+    context = await client.enrich_context(
+        "continue from where we left off",
+        platform="signal",
+        active_session_id=str(current.id),
+        agent_namespace="main",
+    )
+
+    assert "Recent cross-session continuity:" in context
+    assert "Last thread: Debugged Signal continuity around restart and narrowed the remaining handoff gap." in context
+    assert "Carry forward: Need to run one real Signal reply and verify baton carry-forward after rollover." in context
+    assert "Assistant was helping with:" in context
+
+
+@pytest.mark.asyncio
+async def test_warm_live_curator_refreshes_timeline_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="signal", agent_namespace="main")
+    await transport.update_session(
+        str(session.id),
+        {
+            "message_count": 6,
+            "summary": "Finished restart fixes and verified faster Signal reply flow.",
+        },
+    )
+
+    from memory import consolidation
+
+    calls = {
+        "active_state": 0,
+        "commitments": 0,
+        "corrections": 0,
+        "directives": 0,
+        "timeline_events": 0,
+    }
+
+    async def fake_refresh_active_state(*args, **kwargs):
+        calls["active_state"] += 1
+        return {"states_upserted": 1, "states_staled": 0, "state_keys": ["auto:open_loop:primary"]}
+
+    async def fake_refresh_commitments(*args, **kwargs):
+        calls["commitments"] += 1
+        return {"commitments_upserted": 1, "commitment_count": 1}
+
+    async def fake_refresh_corrections(*args, **kwargs):
+        calls["corrections"] += 1
+        return {"corrections_upserted": 0, "correction_count": 0}
+
+    async def fake_refresh_directives(*args, **kwargs):
+        calls["directives"] += 1
+        return {"directives_upserted": 1, "directive_count": 1}
+
+    async def fake_refresh_timeline_events(*args, **kwargs):
+        calls["timeline_events"] += 1
+        return {"timeline_events_upserted": 1, "timeline_event_count": 1}
+
+    monkeypatch.setattr(consolidation, "refresh_active_state", fake_refresh_active_state)
+    monkeypatch.setattr(consolidation, "refresh_commitments", fake_refresh_commitments)
+    monkeypatch.setattr(consolidation, "refresh_corrections", fake_refresh_corrections)
+    monkeypatch.setattr(consolidation, "refresh_directives", fake_refresh_directives)
+    monkeypatch.setattr(consolidation, "refresh_timeline_events", fake_refresh_timeline_events)
+
+    result = await client.curate_live_continuity(
+        str(session.id),
+        agent_namespace="main",
+        mode="warm",
+        force=True,
+    )
+
+    assert result["hot_ran"] is True
+    assert result["warm_ran"] is True
+    assert "timeline_events" in result
+    assert calls["active_state"] == 1
+    assert calls["commitments"] == 1
+    assert calls["corrections"] == 1
+    assert calls["directives"] == 1
+    assert calls["timeline_events"] == 1

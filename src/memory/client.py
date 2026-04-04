@@ -51,6 +51,21 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _normalize_batch_message(message: dict[str, Any], default_platform: str) -> dict[str, Any] | None:
     role = str(message.get("role") or "").strip().lower()
     if role not in {EpisodeRole.USER.value, EpisodeRole.ASSISTANT.value}:
@@ -723,15 +738,183 @@ class MemoryClient:
         session_id: str,
         *,
         agent_namespace: str | None = None,
+        active_state_records: list[ActiveState] | None = None,
+        commitments: list[Commitment] | None = None,
     ) -> SessionHandoff | None:
         session = await self.transport.get_session(session_id)
         if session is None:
             return None
         episodes = await self.transport.list_episodes_for_session(session_id, limit=12)
-        handoff = build_session_handoff(session, episodes, agent_namespace=agent_namespace)
+        if active_state_records is None:
+            active_state_records = await self.transport.list_active_state(
+                limit=8,
+                agent_namespace=agent_namespace,
+                statuses=["active", "cooling"],
+            )
+        if commitments is None:
+            commitments = await self.transport.list_commitments(
+                limit=8,
+                agent_namespace=agent_namespace,
+                statuses=["open"],
+            )
+        handoff = build_session_handoff(
+            session,
+            episodes,
+            agent_namespace=agent_namespace,
+            active_state_records=active_state_records,
+            commitments=commitments,
+        )
         if handoff is None:
             return None
         return await self.transport.upsert_session_handoff(handoff)
+
+    async def curate_live_continuity(
+        self,
+        session_id: str,
+        *,
+        agent_namespace: str | None = None,
+        mode: str = "hot",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        session = await self.transport.get_session(session_id)
+        if session is None:
+            return {"curated": False, "reason": "missing-session"}
+
+        normalized_mode = str(mode or "hot").strip().lower()
+        if normalized_mode not in {"hot", "warm"}:
+            raise ValueError(f"Unsupported live curator mode: {mode}")
+
+        model_config = dict(session.session_model_config or {})
+        message_count = int(session.message_count or 0)
+        now = _utcnow()
+
+        last_hot_count = int(model_config.get("atlas_hot_curator_message_count") or 0)
+        last_hot_at = _parse_iso_datetime(model_config.get("atlas_hot_curator_at"))
+        seconds_since_hot = (now - last_hot_at).total_seconds() if last_hot_at else None
+        hot_due = (
+            force
+            or message_count <= 2
+            or (message_count - last_hot_count) >= 2
+            or (seconds_since_hot is not None and seconds_since_hot >= 120.0)
+        )
+
+        should_run_hot = hot_due or normalized_mode == "warm"
+        should_run_warm = normalized_mode == "warm"
+
+        active_state_records = await self.transport.list_active_state(
+            limit=8,
+            agent_namespace=agent_namespace,
+            statuses=["active", "cooling"],
+        )
+        commitments = await self.transport.list_commitments(
+            limit=8,
+            agent_namespace=agent_namespace,
+            statuses=["open"],
+        )
+
+        result: dict[str, Any] = {
+            "curated": False,
+            "mode": normalized_mode,
+            "hot_ran": False,
+            "warm_ran": False,
+            "handoff_refreshed": False,
+        }
+
+        if should_run_hot:
+            from memory.consolidation import refresh_active_state, refresh_commitments, refresh_corrections
+
+            refreshed = await asyncio.gather(
+                refresh_active_state(
+                    self,
+                    lookback_hours=24,
+                    min_message_count=1,
+                    agent_namespace=agent_namespace,
+                    include_unsummarized=True,
+                ),
+                refresh_commitments(
+                    self,
+                    lookback_days=14,
+                    agent_namespace=agent_namespace,
+                ),
+                refresh_corrections(
+                    self,
+                    lookback_days=14,
+                    agent_namespace=agent_namespace,
+                ),
+                return_exceptions=True,
+            )
+            active_result, commitment_result, correction_result = refreshed
+            if not isinstance(active_result, Exception):
+                result["active_state"] = active_result
+                active_state_records = await self.transport.list_active_state(
+                    limit=8,
+                    agent_namespace=agent_namespace,
+                    statuses=["active", "cooling"],
+                )
+            else:
+                logger.warning("Hot live curator failed to refresh active_state: %s", active_result)
+                result["active_state_error"] = str(active_result)
+            if not isinstance(commitment_result, Exception):
+                result["commitments"] = commitment_result
+                commitments = await self.transport.list_commitments(
+                    limit=8,
+                    agent_namespace=agent_namespace,
+                    statuses=["open"],
+                )
+            else:
+                logger.warning("Hot live curator failed to refresh commitments: %s", commitment_result)
+                result["commitments_error"] = str(commitment_result)
+            if not isinstance(correction_result, Exception):
+                result["corrections"] = correction_result
+            else:
+                logger.warning("Hot live curator failed to refresh corrections: %s", correction_result)
+                result["corrections_error"] = str(correction_result)
+
+            result["hot_ran"] = True
+            model_config["atlas_hot_curator_at"] = now.isoformat()
+            model_config["atlas_hot_curator_message_count"] = message_count
+
+        if should_run_warm:
+            from memory.consolidation import refresh_directives, refresh_timeline_events
+
+            try:
+                directives_result = await refresh_directives(
+                    self,
+                    lookback_days=60,
+                    agent_namespace=agent_namespace,
+                )
+                result["directives"] = directives_result
+            except Exception as exc:
+                logger.warning("Warm live curator failed to refresh directives: %s", exc)
+                result["directives_error"] = str(exc)
+            try:
+                timeline_result = await refresh_timeline_events(
+                    self,
+                    lookback_days=30,
+                    min_message_count=1,
+                    agent_namespace=agent_namespace,
+                )
+                result["timeline_events"] = timeline_result
+            except Exception as exc:
+                logger.warning("Warm live curator failed to refresh timeline_events: %s", exc)
+                result["timeline_events_error"] = str(exc)
+            result["warm_ran"] = True
+            model_config["atlas_warm_curator_at"] = now.isoformat()
+            model_config["atlas_warm_curator_message_count"] = message_count
+
+        handoff = await self.refresh_session_handoff(
+            session_id,
+            agent_namespace=agent_namespace,
+            active_state_records=active_state_records,
+            commitments=commitments,
+        )
+        result["handoff_refreshed"] = handoff is not None
+        result["curated"] = bool(result["hot_ran"] or result["warm_ran"] or result["handoff_refreshed"])
+
+        if model_config != dict(session.session_model_config or {}):
+            await self.transport.update_session(session_id, {"model_config": model_config})
+
+        return result
 
     async def health_check(self) -> bool:
         return await self.transport.health_check()

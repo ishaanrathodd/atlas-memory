@@ -2161,24 +2161,43 @@ async def refresh_active_state(
     *,
     lookback_hours: int = ACTIVE_STATE_LOOKBACK_HOURS,
     min_message_count: int = 2,
+    include_unsummarized: bool = False,
     now: datetime | None = None,
     agent_namespace: str | None = None,
 ) -> dict[str, Any]:
     reference_time = now or _utcnow()
     since = reference_time - timedelta(hours=lookback_hours)
-    recent_sessions = await _list_recent_summarized_sessions(
-        client,
-        since=since,
-        min_message_count=min_message_count,
-        agent_namespace=agent_namespace,
-    )
+    if include_unsummarized:
+        recent_sessions = await _list_recent_candidate_sessions(
+            client,
+            since=since,
+            limit=max(ACTIVE_STATE_SESSION_LIMIT * 4, 24),
+            agent_namespace=agent_namespace,
+        )
+        recent_sessions = [
+            session
+            for session in recent_sessions
+            if int(session.message_count or 0) >= min_message_count
+        ]
+    else:
+        recent_sessions = await _list_recent_summarized_sessions(
+            client,
+            since=since,
+            min_message_count=min_message_count,
+            agent_namespace=agent_namespace,
+        )
+
+    def _is_meaningful_summary(session: Session) -> bool:
+        if not session.summary:
+            return include_unsummarized
+        summary_text = str(session.summary or "")
+        return not _looks_like_operational_content(summary_text) and not _looks_like_reference_content(summary_text)
+
     recent_sessions = [
         session
         for session in recent_sessions
         if session.platform.value != "other"
-        if session.summary
-        if not _looks_like_operational_content(str(session.summary or ""))
-        if not _looks_like_reference_content(str(session.summary or ""))
+        if _is_meaningful_summary(session)
     ]
     recent_sessions = sorted(recent_sessions, key=lambda session: session.started_at, reverse=True)[:ACTIVE_STATE_SESSION_LIMIT]
     active_facts = await client.search_facts(limit=ACTIVE_STATE_FACT_LIMIT, agent_namespace=agent_namespace)

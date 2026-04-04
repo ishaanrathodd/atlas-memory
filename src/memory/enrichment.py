@@ -840,8 +840,8 @@ class EnrichmentPayload:
             _format_patterns(self.patterns),
             _format_facts(self.facts),
             _format_active_state(self.active_state_lines),
-            _format_relevant_episodes(self.relevant_episodes),
             _format_recent_handoff(self.continuity_handoff_lines, self.recent_episodes),
+            _format_relevant_episodes(self.relevant_episodes),
             _format_active_session(self.active_session),
         ]
         return "\n\n".join(section for section in sections if section)
@@ -997,7 +997,7 @@ def _continuity_bootstrap_active(active_session: Session | None, *, continuity_q
         return True
     if active_session is None:
         return True
-    return int(active_session.message_count or 0) <= 2
+    return int(active_session.message_count or 0) <= 4
 
 
 def _continuity_candidate_episodes(episodes: list[Episode], corrections: list[Correction]) -> list[Episode]:
@@ -1273,6 +1273,21 @@ def _continuity_handoff_lines_from_record(handoff: SessionHandoff | None) -> lis
     return deduped[:4]
 
 
+def _session_handoff_rank(handoff: SessionHandoff) -> tuple[float, int, datetime]:
+    richness = 0
+    if handoff.carry_forward:
+        richness += 2
+    if handoff.assistant_context:
+        richness += 1
+    if handoff.emotional_tone:
+        richness += 1
+    return (
+        float(handoff.confidence),
+        richness,
+        _sort_datetime(handoff.last_observed_at),
+    )
+
+
 def _strip_continuity_prefix(value: str, prefix: str) -> str:
     if value.startswith(prefix):
         return value[len(prefix):].strip()
@@ -1297,6 +1312,8 @@ def build_session_handoff(
     episodes: list[Episode],
     *,
     agent_namespace: str | None = None,
+    active_state_records: list[ActiveState] | None = None,
+    commitments: list[Commitment] | None = None,
 ) -> SessionHandoff | None:
     if session.id is None:
         return None
@@ -1304,8 +1321,8 @@ def build_session_handoff(
     lines = _build_continuity_handoff_lines(
         session,
         meaningful_episodes,
-        active_state_records=[],
-        commitments=[],
+        active_state_records=list(active_state_records or []),
+        commitments=list(commitments or []),
     )
     if not lines:
         return None
@@ -1697,7 +1714,7 @@ async def collect_enrichment_payload(
     handoff_recent_session_id = _recent_session_id_for_handoff(handoff_recent_candidates)
     previous_session: Session | None = None
     previous_session_episodes: list[Episode] = []
-    selected_handoff = session_handoffs[0] if session_handoffs else None
+    selected_handoff = max(session_handoffs, key=_session_handoff_rank) if session_handoffs else None
     if (
         selected_handoff is None
         and handoff_recent_session_id
