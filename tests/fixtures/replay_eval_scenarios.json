@@ -61,5 +61,234 @@
         }
       ]
     }
+  },
+  {
+    "id": "exact_prev_session_last_texts",
+    "description": "New-session exact recall should return verbatim prior-session user messages.",
+    "user_message": "before this session what were my last few texts to you?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "active_session_id": "11111111-1111-4111-8111-111111111111",
+    "expect_contains": [
+      "Exact recent user messages (verbatim):",
+      "improve retrieval evidence before rollout",
+      "add canary replay check before deploy"
+    ],
+    "expect_not_contains": [
+      "this message is from active session and must not appear in exact recall"
+    ],
+    "min_counts": {
+      "relevant_episodes": 2,
+      "exact_recall_mode": 1
+    },
+    "seed": {
+      "sessions": [
+        {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "agent_namespace": "main",
+          "platform": "telegram",
+          "started_at": "2026-04-05T10:00:00Z",
+          "message_count": 2,
+          "user_message_count": 1
+        },
+        {
+          "id": "22222222-2222-4222-8222-222222222222",
+          "agent_namespace": "main",
+          "platform": "telegram",
+          "started_at": "2026-04-04T10:00:00Z",
+          "ended_at": "2026-04-04T10:30:00Z",
+          "message_count": 8,
+          "user_message_count": 4
+        }
+      ],
+      "episodes": [
+        {
+          "session_id": "22222222-2222-4222-8222-222222222222",
+          "agent_namespace": "main",
+          "role": "user",
+          "content": "improve retrieval evidence before rollout",
+          "platform": "telegram",
+          "message_timestamp": "2026-04-04T10:20:00Z"
+        },
+        {
+          "session_id": "22222222-2222-4222-8222-222222222222",
+          "agent_namespace": "main",
+          "role": "user",
+          "content": "add canary replay check before deploy",
+          "platform": "telegram",
+          "message_timestamp": "2026-04-04T10:25:00Z"
+        },
+        {
+          "session_id": "11111111-1111-4111-8111-111111111111",
+          "agent_namespace": "main",
+          "role": "user",
+          "content": "this message is from active session and must not appear in exact recall",
+          "platform": "telegram",
+          "message_timestamp": "2026-04-05T10:01:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "week_number_topic_recall",
+    "description": "Week-number queries should focus on the requested ISO week rollup only.",
+    "user_message": "what was the main topic we kept returning to in week 32 of 2026?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "memory reliability, replay eval, and regression gates"
+    ],
+    "expect_not_contains": [
+      "focus drifted across too many initiatives"
+    ],
+    "min_counts": {
+      "timeline_events": 1
+    },
+    "seed": {
+      "timeline_events": [
+        {
+          "agent_namespace": "main",
+          "kind": "week_summary",
+          "title": "Week of 2026-07-27",
+          "summary": "Focus drifted across too many initiatives and no single thread dominated.",
+          "event_key": "eval:timeline:week31",
+          "event_time": "2026-07-30T09:00:00Z",
+          "tags": ["week-summary"],
+          "importance_score": 0.72
+        },
+        {
+          "agent_namespace": "main",
+          "kind": "week_summary",
+          "title": "Week of 2026-08-03",
+          "summary": "The main recurring topic was memory reliability, replay eval, and regression gates.",
+          "event_key": "eval:timeline:week32",
+          "event_time": "2026-08-05T09:00:00Z",
+          "tags": ["week-summary", "memory"],
+          "importance_score": 0.84
+        }
+      ]
+    }
+  },
+  {
+    "id": "always_known_profile_available",
+    "description": "Always-known profile should be available even for unrelated execution-planning prompts.",
+    "user_message": "help me plan today's execution path",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "Always-known user profile:",
+      "solo founder building Upstorr",
+      "always-on assistant for life and work"
+    ],
+    "min_counts": {
+      "core_profile_lines": 2
+    },
+    "seed": {
+      "facts": [
+        {
+          "agent_namespace": "main",
+          "content": "Ishaan is a solo founder building Upstorr and optimizing AI-assisted workflows.",
+          "category": "identity",
+          "tags": ["identity", "career"],
+          "confidence": 0.95
+        },
+        {
+          "agent_namespace": "main",
+          "content": "Current long-term goal is building a reliable always-on assistant for life and work.",
+          "category": "goal",
+          "tags": ["assistant", "long-term"],
+          "confidence": 0.92
+        }
+      ]
+    }
+  },
+  {
+    "id": "proactive_coach_prevents_repeat_failures",
+    "description": "Execution prompts should proactively surface past risk, recurring trap, and proven better path.",
+    "user_message": "I am working on checkout migration rollout right now, what should I do?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "Proactive coach notes:",
+      "Past risk to avoid:",
+      "Recurring trap signal:",
+      "Proven better path:"
+    ],
+    "min_counts": {
+      "proactive_coach_lines": 2,
+      "decision_outcomes": 1
+    },
+    "seed": {
+      "decision_outcomes": [
+        {
+          "agent_namespace": "main",
+          "kind": "workflow",
+          "status": "failure",
+          "decision": "Rushed checkout migration rollout without verification gates.",
+          "outcome": "Production regressions and rework consumed two days.",
+          "lesson": "Ship with replay-eval and CI regression gates before full rollout.",
+          "importance_score": 0.95,
+          "confidence": 0.95,
+          "tags": ["checkout", "migration", "rollout"]
+        },
+        {
+          "agent_namespace": "main",
+          "kind": "workflow",
+          "status": "success",
+          "decision": "Staged checkout migration with replay harness and canary checks.",
+          "outcome": "Cut regressions and reduced rollback risk significantly.",
+          "lesson": "Start with canary plus replay coverage, then gradual traffic ramp.",
+          "importance_score": 0.92,
+          "confidence": 0.92,
+          "tags": ["checkout", "migration", "rollout"]
+        }
+      ],
+      "patterns": [
+        {
+          "agent_namespace": "main",
+          "pattern_type": "trap",
+          "statement": "Under deadline pressure, rollout speed tends to outrun verification depth.",
+          "description": "Repeated cross-session failure mode during shipping crunch windows.",
+          "pattern_key": "eval:pattern:verification-trap",
+          "confidence": 0.9,
+          "frequency_score": 0.85,
+          "impact_score": 0.9,
+          "first_observed_at": "2026-01-01T00:00:00Z",
+          "last_observed_at": "2026-04-04T00:00:00Z",
+          "tags": ["rollout", "verification", "deadline"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "harmful_pattern_introspection",
+    "description": "Year-long harmful-pattern introspection should surface high-impact trap signals.",
+    "user_message": "we have talked for a year now, what patterns do you notice in me which are harmful for me?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "Relevant patterns:",
+      "rollout speed tends to outrun verification depth"
+    ],
+    "min_counts": {
+      "patterns": 1
+    },
+    "seed": {
+      "patterns": [
+        {
+          "agent_namespace": "main",
+          "pattern_type": "trap",
+          "statement": "Under deadline pressure, rollout speed tends to outrun verification depth.",
+          "description": "High-impact repeated pattern across multiple sessions.",
+          "pattern_key": "eval:pattern:harmful-rollout-trap",
+          "confidence": 0.91,
+          "frequency_score": 0.82,
+          "impact_score": 0.94,
+          "first_observed_at": "2025-05-01T00:00:00Z",
+          "last_observed_at": "2026-04-01T00:00:00Z",
+          "tags": ["harmful", "rollout", "verification"]
+        }
+      ]
+    }
   }
 ]

@@ -512,9 +512,13 @@ async def evaluate_replay_scenario(scenario: ReplayScenario) -> dict[str, Any]:
         "timeline_events": len(payload.timeline_events),
         "commitments": len(payload.commitments),
         "active_state_lines": len(payload.active_state_lines),
+        "core_profile_lines": len(payload.core_profile_lines),
+        "life_trajectory_lines": len(payload.life_trajectory_lines),
+        "proactive_coach_lines": len(payload.proactive_coach_lines),
         "continuity_handoff_lines": len(payload.continuity_handoff_lines),
         "relevant_episodes": len(payload.relevant_episodes),
         "recent_episodes": len(payload.recent_episodes),
+        "exact_recall_mode": 1 if payload.exact_recall_mode else 0,
     }
     for key, minimum in scenario.min_counts.items():
         observed = int(count_values.get(key, 0))

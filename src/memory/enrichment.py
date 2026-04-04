@@ -2104,6 +2104,7 @@ async def collect_enrichment_payload(
         ranked_relevant_episodes = [
             episode
             for episode in sorted(combined_candidates, key=lambda episode: episode.message_timestamp, reverse=True)
+            if active_session_id is None or str(episode.session_id) != active_session_id
             if episode.role == EpisodeRole.USER
             if not _is_corrected_text(episode.content, corrections)
             if not _looks_like_reference_content(episode.content, getattr(episode, "message_metadata", {}) or {})
