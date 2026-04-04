@@ -457,9 +457,9 @@ async def test_collect_enrichment_payload_filters_low_quality_facts() -> None:
         hours_ago=0,
     ).model_copy(update={"source_episode_ids": []})
     noisy_goal = _make_fact(
-        "User wants to add it so the E2E tests and daemon can actually talk to the DB.",
+        "User wants to add it so the E2E tests and curator can actually talk to the DB.",
         category=FactCategory.GOAL,
-        tags=["goal", "e2e", "daemon"],
+        tags=["goal", "e2e", "curator"],
         hours_ago=0,
     )
     noisy_preference = _make_fact(

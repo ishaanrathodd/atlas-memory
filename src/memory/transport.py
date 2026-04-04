@@ -86,7 +86,7 @@ _REFERENCE_CONTENT_MARKERS = (
 _OPERATIONAL_CONTENT_MARKERS = (
     "[system: if you have a meaningful status report or findings",
     "run the memory processor. execute:",
-    "python -m memory.daemon process-memory",
+    "python -m memory.curator_runtime process-memory",
     "memory processor failed",
     "memory processor ran clean",
     "no new memory processing needed",
@@ -244,7 +244,7 @@ def _looks_like_operational_content(content: str, metadata: dict[str, Any] | Non
     if "consolidated" in lowered_content and "session" in lowered_content and "fact" in lowered_content:
         return True
     source_kind = str(metadata.get("source_kind") or "").lower()
-    return source_kind in {"operational_prompt", "operational_status", "daemon_status"}
+    return source_kind in {"operational_prompt", "operational_status", "curator_status"}
 
 
 def _reference_content_penalty(
@@ -284,7 +284,7 @@ def _operational_content_penalty(
     operational_query_markers = (
         "memory processor",
         "process-memory",
-        "daemon",
+        "curator",
         "status report",
         "facts extracted",
         "episode_count",
@@ -1923,7 +1923,7 @@ class LocalTransport(SupabaseTransport):
 
 
 class RemoteTransport:
-    """HTTP client to VPS daemon (future)."""
+    """HTTP client to VPS runtime service (future)."""
 
     async def insert_session(self, session: Session) -> Session:
         raise NotImplementedError("RemoteTransport is not implemented yet.")

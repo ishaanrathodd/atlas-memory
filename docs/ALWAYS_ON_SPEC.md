@@ -1,8 +1,8 @@
-# Memory Always-On Daemon Technical Specification
+# Memory Always-On Curator Technical Specification
 
 ## Purpose
 
-This document specifies the Phase 3 always-on daemon for Memory. The daemon is responsible for:
+This document specifies the Phase 3 always-on curator for Memory. The curator is responsible for:
 
 - maintaining memory hygiene in the background
 - building a current-state model of the user across platforms
@@ -13,11 +13,11 @@ This document specifies the Phase 3 always-on daemon for Memory. The daemon is r
 
 The design is implementation-oriented and is intended to be used directly for building:
 
-- `src/memory/daemon.py`
+- `src/memory/curator_runtime.py`
 - `src/memory/state_tracker.py`
 - `src/memory/proactive.py`
 - `src/memory/consolidation.py`
-- `tests/test_daemon.py`
+- `tests/test_curator_runtime.py`
 - `tests/test_state_tracker.py`
 
 It assumes the existing `MemoryClient`, `MemoryTransport`, `SupabaseTransport`, `EmotionAnalyzer`, and fact extraction utilities remain the canonical memory APIs.
@@ -25,7 +25,7 @@ It assumes the existing `MemoryClient`, `MemoryTransport`, `SupabaseTransport`, 
 ## Goals
 
 - Reuse the existing `memory` client and transport stack instead of introducing a parallel storage path.
-- Support both a long-running local daemon and Hermes cron-driven execution.
+- Support both a long-running local curator and Hermes cron-driven execution.
 - Maintain a rolling, privacy-bounded state model of what the user is doing.
 - Generate proactive prompts only when useful, low-risk, and rate-limited.
 - Keep power, CPU, memory, and network usage acceptable on a MacBook Air M2 with 8 GB RAM.
@@ -41,7 +41,7 @@ It assumes the existing `MemoryClient`, `MemoryTransport`, `SupabaseTransport`, 
 
 ## Existing Integration Surface
 
-The daemon should build on these existing modules:
+The curator should build on these existing modules:
 
 - `src/memory/client.py`
   - session lifecycle
@@ -56,20 +56,20 @@ The daemon should build on these existing modules:
 - `src/memory/enrichment.py`
   - recent episodes and fact relevance
 
-The daemon must use `MemoryClient` as its primary write path. It may read some local system signals directly, but it should not bypass the client for Memory data mutations unless the operation is explicitly a transport-level maintenance function.
+The curator must use `MemoryClient` as its primary write path. It may read some local system signals directly, but it should not bypass the client for Memory data mutations unless the operation is explicitly a transport-level maintenance function.
 
 ## High-Level Recommendation
 
 Use a hybrid model:
 
-1. Primary mode: persistent local daemon managed by `launchd`.
+1. Primary mode: persistent local curator managed by `launchd`.
 2. Secondary mode: Hermes cron jobs as safety net and recovery path.
-3. Development mode: foreground CLI process via `python -m memory.daemon`.
+3. Development mode: foreground CLI process via `python -m memory.curator_runtime`.
 
 This is the recommended split because:
 
 - a persistent process is better for low-latency state awareness, event debouncing, offline spooling, and proactive scheduling
-- cron is better for coarse maintenance, restart recovery, and environments where the daemon is not running
+- cron is better for coarse maintenance, restart recovery, and environments where the curator is not running
 - relying on cron alone is too coarse for "what is the user doing right now" and emotional carry-over logic
 
 ## Runtime Modes
@@ -96,7 +96,7 @@ Use for:
 
 ### Mode B: Hermes Cron Fallback
 
-Recommended as backup even when the persistent daemon is enabled.
+Recommended as backup even when the persistent curator is enabled.
 
 Characteristics:
 
@@ -109,15 +109,15 @@ Use for:
 - memory consolidation every 6 hours
 - fact decay checks daily
 - stalled job recovery
-- opportunistic outreach checks if the daemon was down
+- opportunistic outreach checks if the curator was down
 
 ### Mode C: Foreground Development CLI
 
 Example:
 
 ```bash
-python -m memory.daemon process-memory
-python -m memory.daemon stats
+python -m memory.curator_runtime process-memory
+python -m memory.curator_runtime stats
 ```
 
 Use for:
@@ -158,7 +158,7 @@ Owns lifecycle, startup checks, task registration, graceful shutdown, health rep
 Responsibilities:
 
 - initialize config, client, stores, and adapters
-- acquire singleton lock so only one persistent daemon runs
+- acquire singleton lock so only one persistent curator runs
 - start scheduler and signal collectors
 - expose health status
 - trap SIGINT and SIGTERM
@@ -172,7 +172,7 @@ Requirements:
 
 - task registry with intervals and max concurrency
 - per-task lock to ensure idempotent single execution
-- persisted run metadata so cron and daemon cannot duplicate work
+- persisted run metadata so cron and curator cannot duplicate work
 - exponential backoff after transient failures
 - random jitter to avoid bursty wakeups and synchronized API calls
 
@@ -236,11 +236,11 @@ Responsibilities:
 
 ### 8. `LocalStateStore`
 
-Low-overhead local persistence for daemon-only metadata.
+Low-overhead local persistence for curator-only metadata.
 
 Recommended implementation:
 
-- SQLite database under `~/.hermes/memory/state/daemon.db`
+- SQLite database under `~/.hermes/memory/state/curator.db`
 
 Suggested tables:
 
@@ -270,24 +270,24 @@ The implementation should support both, but default to persistent process plus c
 
 - reboot and crash recovery
 - low-complexity fallback on hosts where launchd is disabled
-- guaranteed maintenance windows even if the persistent daemon was stopped
+- guaranteed maintenance windows even if the persistent curator was stopped
 
 ### Operational model
 
-- `launchd` starts the daemon at login and keeps it alive
-- Hermes cron runs these jobs even if the daemon exists:
+- `launchd` starts the curator at login and keeps it alive
+- Hermes cron runs these jobs even if the curator exists:
   - `memory-heartbeat` every 6 hours
   - `memory-decay-check` daily
   - `memory-recovery-check` hourly
 - cron tasks first inspect the local lock and recent run metadata
-  - if the persistent daemon is healthy and the task is fresh, cron exits without doing work
-  - if the daemon is unhealthy, stale, or absent, cron executes the task directly
+  - if the persistent curator is healthy and the task is fresh, cron exits without doing work
+  - if the curator is unhealthy, stale, or absent, cron executes the task directly
 
 ### Singleton locking
 
 Use one local lock file for persistent mode:
 
-- path: `~/.hermes/memory/state/daemon.lock`
+- path: `~/.hermes/memory/state/curator.lock`
 - include PID, hostname, start time, and heartbeat timestamp
 - treat the lock as stale if PID is gone or heartbeat is older than threshold
 
@@ -344,7 +344,7 @@ State awareness should combine Memory-native memory with local signals. It must 
 
 ### State model
 
-The daemon should produce a normalized state snapshot like:
+The curator should produce a normalized state snapshot like:
 
 ```json
 {
@@ -378,7 +378,7 @@ The daemon should produce a normalized state snapshot like:
       "evidence": ["recent episodes", "frontmost app", "recent facts"]
     }
   ],
-  "topics": ["daemon", "memory", "cron"],
+  "topics": ["curator", "memory", "cron"],
   "emotion": {
     "rolling_baseline": {"anticipation": 0.21, "trust": 0.18},
     "short_term_state": {"stress": 0.32, "joy": 0.10},
@@ -464,7 +464,7 @@ Preferred source order:
 2. Hermes-managed schedule cache if available
 3. none
 
-The daemon should store only coarse event metadata:
+The curator should store only coarse event metadata:
 
 - current event title or category
 - start and end timestamps
@@ -638,7 +638,7 @@ If permissions are missing or connector is unavailable:
 
 ## Proactive Outreach Triggers and Rules
 
-Proactive outreach should be intentional, infrequent, and reversible. The daemon should generate notification intents, not immediately deliver them, until all gates pass.
+Proactive outreach should be intentional, infrequent, and reversible. The curator should generate notification intents, not immediately deliver them, until all gates pass.
 
 ### Trigger classes
 
@@ -783,7 +783,7 @@ Already partly supported on `Session`:
 - `dominant_emotions`
 - `dominant_emotion_counts`
 
-Add in daemon-maintained local summary:
+Add in curator-maintained local summary:
 
 - `session_emotion_vector`
 - `session_resolved_tone`
@@ -848,7 +848,7 @@ class EmotionalContinuity:
 
 ## Multi-Platform Unified Memory
 
-The daemon must treat Memory as one memory plane across all platforms while preserving source attribution.
+The curator must treat Memory as one memory plane across all platforms while preserving source attribution.
 
 ### Requirements
 
@@ -859,14 +859,14 @@ The daemon must treat Memory as one memory plane across all platforms while pres
 
 ### Identity strategy
 
-The daemon should operate on these levels:
+The curator should operate on these levels:
 
 - `platform`
 - `session_id`
 - `conversation_key`
 - `user_identity_scope`
 
-Suggested additions in local daemon metadata:
+Suggested additions in local curator metadata:
 
 - `platform_session_map`
 - `episode_dedup_index` keyed by content hash + time bucket + platform
@@ -891,11 +891,11 @@ Cross-platform activity should be summarized as:
 Example:
 
 - user discussed Memory on Telegram yesterday, local CLI today, and WhatsApp tonight
-- daemon should model that as one project continuity thread, not three disconnected topics
+- curator should model that as one project continuity thread, not three disconnected topics
 
 ## Resource Management for MacBook Air M2 8 GB
 
-The daemon must be tuned for a fanless laptop with limited RAM.
+The curator must be tuned for a fanless laptop with limited RAM.
 
 ### Budgets
 
@@ -969,7 +969,7 @@ async def maybe_run_heavy_task(task_name: str, coro: Awaitable[None]) -> None:
 
 ## Fallback Behavior When Offline
 
-Offline behavior must be first-class. The daemon should continue to track coarse state locally even if Supabase or OpenAI are unavailable.
+Offline behavior must be first-class. The curator should continue to track coarse state locally even if Supabase or OpenAI are unavailable.
 
 ### Offline classes
 
@@ -1138,14 +1138,14 @@ Suggested retention:
 
 #### Rule 5: Local file permissions
 
-Daemon local state files should be created with restrictive permissions where possible.
+Curator local state files should be created with restrictive permissions where possible.
 
 - directories: `0700`
 - SQLite / logs / queue files: `0600`
 
 ## Interfaces and Proposed Modules
 
-### `src/memory/daemon.py`
+### `src/memory/curator_runtime.py`
 
 Should expose:
 
@@ -1184,16 +1184,16 @@ Should expose:
 
 ### Suggested config additions
 
-Add daemon-specific configuration fields, likely in `MemoryConfig` or a separate `DaemonConfig`:
+Add curator-specific configuration fields, likely in `MemoryConfig` or a separate `DaemonConfig`:
 
 ```python
 @dataclass(slots=True)
 class DaemonConfig:
     enabled: bool = True
     mode: str = "persistent"
-    state_db_path: str = "~/.hermes/memory/state/daemon.db"
-    lock_path: str = "~/.hermes/memory/state/daemon.lock"
-    health_path: str = "~/.hermes/memory/state/daemon-health.json"
+    state_db_path: str = "~/.hermes/memory/state/curator.db"
+    lock_path: str = "~/.hermes/memory/state/curator.lock"
+    health_path: str = "~/.hermes/memory/state/curator-health.json"
     enable_frontmost_app: bool = True
     capture_window_titles: bool = False
     enable_calendar: bool = False
@@ -1240,7 +1240,7 @@ Requirements:
 
 - bind to `127.0.0.1` only
 - default port configurable, for example `8765`
-- return current daemon status, recent task results, and degraded-source flags
+- return current curator status, recent task results, and degraded-source flags
 - never expose secrets, pending payload contents, or raw user data
 
 Suggested routes:
@@ -1280,7 +1280,7 @@ Use structured logs with:
 
 ### Never-crash policy
 
-The daemon should treat almost all task failures as isolated.
+The curator should treat almost all task failures as isolated.
 
 - a failed task should not terminate the process
 - use supervised child tasks
@@ -1309,7 +1309,7 @@ class MemoryDaemon:
         self.config = load_config()
         self.lock = SingleInstanceLock(self.config.lock_path)
         if self.config.mode == "persistent" and not self.lock.acquire():
-            raise RuntimeError("Memory daemon already running")
+            raise RuntimeError("Memory curator already running")
 
         await self._init_runtime()
         self.scheduler.register("health_heartbeat", every=30, fn=self._heartbeat)
@@ -1340,9 +1340,9 @@ class MemoryDaemon:
 
 ## Implementation Phasing
 
-### Phase 3A: Minimal Daemon Skeleton
+### Phase 3A: Minimal Curator Skeleton
 
-- daemon lifecycle
+- curator lifecycle
 - singleton lock
 - scheduler
 - health file
@@ -1390,8 +1390,8 @@ class MemoryDaemon:
 
 ### Integration tests
 
-- daemon start / stop lifecycle
-- cron fallback skips if daemon is healthy
+- curator start / stop lifecycle
+- cron fallback skips if curator is healthy
 - failed Memory transport spools work offline
 - replay drains queue once transport returns
 - state tracker handles empty Memory database
@@ -1406,7 +1406,7 @@ class MemoryDaemon:
 
 The implementation is successful when:
 
-- persistent daemon and cron fallback both work
+- persistent curator and cron fallback both work
 - state snapshots can answer what the user is doing using active app, last message time, and optional calendar
 - emotional continuity is available for next-session enrichment
 - proactive outreach is useful, rare, and rate-limited

@@ -1119,7 +1119,7 @@ def _decision_outcome_kind(summary: str) -> str:
         return "memory"
     if any(marker in lowered for marker in ("telegram", "whatsapp", "reply", "voice", "transcrib", "message")):
         return "communication"
-    if any(marker in lowered for marker in ("tool", "subagent", "delegate", "codex", "git", "sql", "gateway", "daemon", "cron")):
+    if any(marker in lowered for marker in ("tool", "subagent", "delegate", "codex", "git", "sql", "gateway", "curator", "cron")):
         return "tooling"
     if any(marker in lowered for marker in ("workflow", "process", "approach", "plan", "rollout")):
         return "workflow"

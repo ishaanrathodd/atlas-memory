@@ -6,7 +6,7 @@ import sys
 from typing import Any
 
 from memory.bridge_cli import _ensure_live_session
-from memory.daemon import build_client, close_client_resources, load_hermes_env
+from memory.curator_runtime import build_client, close_client_resources, load_hermes_env
 from memory.recall import (
     find_live_session_route,
     list_live_session_routes,

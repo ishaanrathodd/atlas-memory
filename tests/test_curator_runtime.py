@@ -10,7 +10,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from memory import daemon
+from memory import curator_runtime as runtime
 from memory.backfill import backfill_memory_files
 from memory.client import MemoryClient
 from memory.consolidation import (
@@ -34,7 +34,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class DaemonTransport:
+class CuratorRuntimeTransport:
     def __init__(self) -> None:
         self.sessions: dict[str, Session] = {}
         self.episodes_by_session: dict[str, list[Episode]] = {}
@@ -391,9 +391,9 @@ class DaemonTransport:
         raise ValueError(table)
 
 
-def _make_client(transport: DaemonTransport | None = None) -> MemoryClient:
+def _make_client(transport: CuratorRuntimeTransport | None = None) -> MemoryClient:
     return MemoryClient(
-        transport=transport or DaemonTransport(),
+        transport=transport or CuratorRuntimeTransport(),
         embedding=MockEmbeddingProvider(),
         emotions=EmotionAnalyzer(),
     )
@@ -432,7 +432,7 @@ def _make_episode(session_id: str, role: EpisodeRole, content: str, offset_minut
 
 @pytest.mark.asyncio
 async def test_consolidate_recent_sessions_updates_session_and_stores_facts(monkeypatch: pytest.MonkeyPatch) -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     session = _make_session(started_at=_utcnow() - timedelta(hours=1), message_count=4)
     transport.sessions[str(session.id)] = session
@@ -491,7 +491,7 @@ async def test_consolidate_recent_sessions_handles_empty_batches() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_active_state_compiles_recent_focus_blocker_and_emotion() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -549,7 +549,7 @@ async def test_refresh_active_state_compiles_recent_focus_blocker_and_emotion() 
 
 @pytest.mark.asyncio
 async def test_refresh_active_state_skips_low_value_project_and_priority_noise() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -607,7 +607,7 @@ async def test_refresh_active_state_skips_low_value_project_and_priority_noise()
 
 @pytest.mark.asyncio
 async def test_refresh_active_state_skips_system_reset_blocker_noise() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -630,7 +630,7 @@ async def test_refresh_active_state_skips_system_reset_blocker_noise() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_active_state_ignores_giant_status_summary_for_focus_and_blocker() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -659,7 +659,7 @@ async def test_refresh_active_state_ignores_giant_status_summary_for_focus_and_b
 
 @pytest.mark.asyncio
 async def test_refresh_active_state_prefers_focus_sentence_over_testing_sentence() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -686,7 +686,7 @@ async def test_refresh_active_state_prefers_focus_sentence_over_testing_sentence
 
 @pytest.mark.asyncio
 async def test_refresh_active_state_extracts_building_and_goals_clauses_cleanly() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -714,7 +714,7 @@ async def test_refresh_active_state_extracts_building_and_goals_clauses_cleanly(
 
 @pytest.mark.asyncio
 async def test_refresh_active_state_ignores_operational_sessions_and_implementation_project_facts() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     operational_session = _make_session(
@@ -761,7 +761,7 @@ async def test_refresh_active_state_ignores_operational_sessions_and_implementat
 
 @pytest.mark.asyncio
 async def test_refresh_active_state_does_not_treat_generic_question_as_open_loop() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -784,7 +784,7 @@ async def test_refresh_active_state_does_not_treat_generic_question_as_open_loop
 
 @pytest.mark.asyncio
 async def test_refresh_directives_extracts_standing_rules_from_user_messages() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -818,7 +818,7 @@ async def test_refresh_directives_extracts_standing_rules_from_user_messages() -
 
 @pytest.mark.asyncio
 async def test_refresh_directives_skips_internal_system_style_clauses() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -844,7 +844,7 @@ async def test_refresh_directives_skips_internal_system_style_clauses() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_timeline_events_materializes_session_summaries() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -863,7 +863,7 @@ async def test_refresh_timeline_events_materializes_session_summaries() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_timeline_events_materializes_day_and_week_rollups() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session_one = _make_session(
@@ -903,7 +903,7 @@ async def test_refresh_timeline_events_materializes_day_and_week_rollups() -> No
 
 @pytest.mark.asyncio
 async def test_refresh_timeline_events_skips_operational_summaries() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -921,7 +921,7 @@ async def test_refresh_timeline_events_skips_operational_summaries() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_decision_outcomes_materializes_structured_outcomes() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -949,7 +949,7 @@ async def test_refresh_decision_outcomes_materializes_structured_outcomes() -> N
 
 @pytest.mark.asyncio
 async def test_refresh_decision_outcomes_requires_visible_grounding() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -971,7 +971,7 @@ async def test_refresh_decision_outcomes_requires_visible_grounding() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_decision_outcomes_skips_unsupported_preference_hallucinations() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -993,13 +993,13 @@ async def test_refresh_decision_outcomes_skips_unsupported_preference_hallucinat
 
 @pytest.mark.asyncio
 async def test_refresh_decision_outcomes_skips_low_value_open_status_updates() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
         started_at=now - timedelta(days=1),
         message_count=6,
-        summary="delegating to codex to run the consolidate daemon against your real sessions. bubbling you when it's done.",
+        summary="delegating to codex to run the consolidate curator against your real sessions. bubbling you when it's done.",
     ).model_copy(update={"agent_namespace": "main"})
     transport.sessions[str(session.id)] = session
 
@@ -1011,7 +1011,7 @@ async def test_refresh_decision_outcomes_skips_low_value_open_status_updates() -
 
 @pytest.mark.asyncio
 async def test_refresh_decision_outcomes_skips_weak_focus_based_summaries() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -1033,7 +1033,7 @@ async def test_refresh_decision_outcomes_skips_weak_focus_based_summaries() -> N
 
 @pytest.mark.asyncio
 async def test_refresh_decision_outcomes_materializes_worker_lesson_for_hot_path_timeouts() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -1057,7 +1057,7 @@ async def test_refresh_decision_outcomes_materializes_worker_lesson_for_hot_path
 
 @pytest.mark.asyncio
 async def test_refresh_decision_outcomes_prunes_stale_auto_outcomes() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     stale_session = _make_session(
@@ -1108,7 +1108,7 @@ async def test_refresh_decision_outcomes_prunes_stale_auto_outcomes() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_patterns_materializes_repeated_tendencies() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session_one = _make_session(
@@ -1145,7 +1145,7 @@ async def test_refresh_patterns_materializes_repeated_tendencies() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_patterns_emits_richer_pattern_types() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session_one = _make_session(
@@ -1196,7 +1196,7 @@ async def test_refresh_patterns_emits_richer_pattern_types() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_patterns_emits_strength_and_emotional_pattern_types() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session_one = _make_session(
@@ -1246,7 +1246,7 @@ async def test_refresh_patterns_emits_strength_and_emotional_pattern_types() -> 
 
 @pytest.mark.asyncio
 async def test_refresh_patterns_requires_repeated_evidence_across_multiple_days() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session_one = _make_session(
@@ -1276,7 +1276,7 @@ async def test_refresh_patterns_requires_repeated_evidence_across_multiple_days(
 
 @pytest.mark.asyncio
 async def test_refresh_patterns_requires_visible_episode_support_not_just_summary_language() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session_one = _make_session(
@@ -1306,7 +1306,7 @@ async def test_refresh_patterns_requires_visible_episode_support_not_just_summar
 
 @pytest.mark.asyncio
 async def test_refresh_patterns_allows_episode_only_support_when_repeated_across_time_windows() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session_one = _make_session(
@@ -1348,7 +1348,7 @@ async def test_refresh_patterns_allows_episode_only_support_when_repeated_across
 
 @pytest.mark.asyncio
 async def test_refresh_patterns_allows_concentrated_reliability_incident_clusters() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     sessions = [
@@ -1383,7 +1383,7 @@ async def test_refresh_patterns_allows_concentrated_reliability_incident_cluster
 
 @pytest.mark.asyncio
 async def test_refresh_patterns_prunes_stale_auto_patterns() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     stale_session = _make_session(
@@ -1442,7 +1442,7 @@ async def test_refresh_patterns_prunes_stale_auto_patterns() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_commitments_extracts_assistant_promises() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -1466,7 +1466,7 @@ async def test_refresh_commitments_extracts_assistant_promises() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_commitments_ignores_internal_let_me_chatter() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -1487,7 +1487,7 @@ async def test_refresh_commitments_ignores_internal_let_me_chatter() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_commitments_closes_old_derived_noise() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     stale_commitment = Commitment(
@@ -1513,7 +1513,7 @@ async def test_refresh_commitments_closes_old_derived_noise() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_commitments_closes_stale_short_lived_promises() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     stale_commitment = Commitment(
@@ -1539,7 +1539,7 @@ async def test_refresh_commitments_closes_stale_short_lived_promises() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_corrections_extracts_user_disputes() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -1562,7 +1562,7 @@ async def test_refresh_corrections_extracts_user_disputes() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_corrections_extracts_scope_clarification_from_what_do_you_mean() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -1585,7 +1585,7 @@ async def test_refresh_corrections_extracts_scope_clarification_from_what_do_you
 
 @pytest.mark.asyncio
 async def test_refresh_corrections_extracts_memory_dispute_from_i_never_told_you() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -1613,14 +1613,14 @@ async def test_refresh_corrections_extracts_memory_dispute_from_i_never_told_you
 
 @pytest.mark.asyncio
 async def test_refresh_corrections_deactivates_stale_false_positive() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     stale_correction = Correction(
         id=uuid4(),
         agent_namespace="main",
         kind=CorrectionKind.FACT_CORRECTION,
-        statement='- A tiny daemon keeps context alive. When I "finish" a task it schedules the next step.',
+        statement='- A tiny curator keeps context alive. When I "finish" a task it schedules the next step.',
         target_text="finish",
         correction_key="auto:correction:stale-false-positive",
         active=True,
@@ -1639,7 +1639,7 @@ async def test_refresh_corrections_deactivates_stale_false_positive() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_corrections_ignores_bullet_list_specs() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -1652,7 +1652,7 @@ async def test_refresh_corrections_ignores_bullet_list_specs() -> None:
         _make_episode(
             str(session.id),
             EpisodeRole.USER,
-            "- A tiny 2-3B model on your Mac\n- When I \"finish\" a task but there's more to do, the daemon schedules the next step\n- When you don't reply for hours, it nudges you again",
+            "- A tiny 2-3B model on your Mac\n- When I \"finish\" a task but there's more to do, the curator schedules the next step\n- When you don't reply for hours, it nudges you again",
             0,
         ).model_copy(update={"agent_namespace": "main"}),
     ]
@@ -1665,7 +1665,7 @@ async def test_refresh_corrections_ignores_bullet_list_specs() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_corrections_uses_collapsed_statement_for_detection() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     now = _utcnow()
     session = _make_session(
@@ -1678,7 +1678,7 @@ async def test_refresh_corrections_uses_collapsed_statement_for_detection() -> N
         _make_episode(
             str(session.id),
             EpisodeRole.USER,
-            "- A tiny 2-3B model on your Mac\n- When I \"finish\" a task but there's more to do, the daemon schedules the next step\n"
+            "- A tiny 2-3B model on your Mac\n- When I \"finish\" a task but there's more to do, the curator schedules the next step\n"
             + (" filler" * 200)
             + "\nthat's wrong",
             0,
@@ -1693,7 +1693,7 @@ async def test_refresh_corrections_uses_collapsed_statement_for_detection() -> N
 
 @pytest.mark.asyncio
 async def test_consolidate_recent_sessions_handles_llm_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     session = _make_session(started_at=_utcnow() - timedelta(minutes=30), message_count=3)
     transport.sessions[str(session.id)] = session
@@ -1741,7 +1741,7 @@ async def test_backfill_memory_files_is_idempotent_and_uses_category_hints(tmp_p
         encoding="utf-8",
     )
 
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     existing = await client.add_fact("User prefers green tea", FactCategory.PREFERENCE.value, tags=["seed"])
     assert existing.tags == ["seed"]
@@ -1769,7 +1769,7 @@ async def test_backfill_memory_files_skips_operational_status_entries(tmp_path: 
         encoding="utf-8",
     )
 
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
 
     stats = await backfill_memory_files(client, hermes_home=hermes_home)
@@ -1781,14 +1781,14 @@ async def test_backfill_memory_files_skips_operational_status_entries(tmp_path: 
 
 
 def test_cli_parser_accepts_supported_tasks() -> None:
-    parser = daemon.build_parser()
+    parser = runtime.build_parser()
 
     args = parser.parse_args(["process-memory"])
 
     assert args.task == "process-memory"
 
 
-def test_daemon_main_dispatches_task_and_prints_json(
+def test_runtime_main_dispatches_task_and_prints_json(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1808,10 +1808,10 @@ def test_daemon_main_dispatches_task_and_prints_json(
         assert hermes_home is not None
         return {"ok": True, "task": task}
 
-    monkeypatch.setattr(daemon, "load_hermes_env", lambda hermes_home=None: {})
-    monkeypatch.setattr(daemon, "run_task", fake_run_task)
+    monkeypatch.setattr(runtime, "load_hermes_env", lambda hermes_home=None: {})
+    monkeypatch.setattr(runtime, "run_task", fake_run_task)
 
-    exit_code = daemon.main(["health"])
+    exit_code = runtime.main(["health"])
 
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -1820,11 +1820,11 @@ def test_daemon_main_dispatches_task_and_prints_json(
 
 @pytest.mark.asyncio
 async def test_run_task_health_reports_supabase_status() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     transport.healthy = False
     client = _make_client(transport)
 
-    result = await daemon.run_task("health", client=client)
+    result = await runtime.run_task("health", client=client)
 
     assert result == {"ok": False}
 
@@ -1865,17 +1865,17 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     async def fake_refresh_corrections(*args, **kwargs) -> dict[str, object]:
         return {"corrections_upserted": 1, "correction_count": 2}
 
-    monkeypatch.setattr(daemon, "consolidate_recent_sessions", fake_consolidate)
-    monkeypatch.setattr(daemon, "collect_stats", fake_stats)
-    monkeypatch.setattr(daemon, "refresh_active_state", fake_refresh)
-    monkeypatch.setattr(daemon, "refresh_directives", fake_refresh_directives)
-    monkeypatch.setattr(daemon, "refresh_commitments", fake_refresh_commitments)
-    monkeypatch.setattr(daemon, "refresh_corrections", fake_refresh_corrections)
-    monkeypatch.setattr(daemon, "refresh_timeline_events", fake_refresh_timeline)
-    monkeypatch.setattr(daemon, "refresh_decision_outcomes", fake_refresh_decision_outcomes)
-    monkeypatch.setattr(daemon, "refresh_patterns", fake_refresh_patterns)
+    monkeypatch.setattr(runtime, "consolidate_recent_sessions", fake_consolidate)
+    monkeypatch.setattr(runtime, "collect_stats", fake_stats)
+    monkeypatch.setattr(runtime, "refresh_active_state", fake_refresh)
+    monkeypatch.setattr(runtime, "refresh_directives", fake_refresh_directives)
+    monkeypatch.setattr(runtime, "refresh_commitments", fake_refresh_commitments)
+    monkeypatch.setattr(runtime, "refresh_corrections", fake_refresh_corrections)
+    monkeypatch.setattr(runtime, "refresh_timeline_events", fake_refresh_timeline)
+    monkeypatch.setattr(runtime, "refresh_decision_outcomes", fake_refresh_decision_outcomes)
+    monkeypatch.setattr(runtime, "refresh_patterns", fake_refresh_patterns)
 
-    result = await daemon.run_task("process-memory", client=client)
+    result = await runtime.run_task("process-memory", client=client)
 
     assert result["task"] == "process-memory"
     assert result["memory_processor"] is True
@@ -1900,7 +1900,7 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
 
 @pytest.mark.asyncio
 async def test_extract_facts_from_recent_sessions_is_idempotent() -> None:
-    transport = DaemonTransport()
+    transport = CuratorRuntimeTransport()
     client = _make_client(transport)
     session = _make_session(
         started_at=_utcnow() - timedelta(minutes=10),
@@ -1937,7 +1937,7 @@ def test_load_hermes_env_resolves_shell_references(tmp_path: Path, monkeypatch: 
     monkeypatch.delenv("MEMORY_OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-    loaded = daemon.load_hermes_env(hermes_home)
+    loaded = runtime.load_hermes_env(hermes_home)
 
     assert loaded["MEMORY_OPENAI_BASE_URL"] == "https://example.test/v1"
     assert os.environ["OPENAI_API_KEY"] == "glm-secret"

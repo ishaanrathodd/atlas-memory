@@ -280,7 +280,7 @@ async def run_task(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m memory.daemon")
+    parser = argparse.ArgumentParser(prog="python -m memory.curator_runtime")
     parser.add_argument(
         "task",
         choices=("process-memory", "extract-facts", "backfill", "stats", "health"),
@@ -305,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     except Exception as exc:
-        _log(f"Daemon task {args.task} failed: {exc}")
+        _log(f"Curator task {args.task} failed: {exc}")
         return 1
 
     print(json.dumps(result, sort_keys=True))

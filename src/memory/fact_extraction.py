@@ -116,7 +116,7 @@ _META_FACT_MARKERS = (
     "telegram",
     "whatsapp",
     "schema",
-    "daemon",
+    "curator",
     "process-memory",
     "reply-to",
     "reply to",

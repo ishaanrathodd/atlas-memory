@@ -178,7 +178,7 @@ def _query_targets_operational_context(value: str) -> bool:
     markers = (
         "memory processor",
         "process-memory",
-        "daemon",
+        "curator",
         "status report",
         "facts extracted",
         "episode_count",
@@ -344,7 +344,7 @@ def _looks_like_project_build_memory(text: str, tags: Sequence[str] | None = Non
         "pipeline",
         "mcp",
         "e2e",
-        "daemon",
+        "curator",
         "gw restart",
         "file operations",
         "subagent",
@@ -668,7 +668,7 @@ def _looks_like_low_quality_fact(fact: Fact) -> bool:
             marker in lowered
             for marker in (
                 "delegate the file operations",
-                "e2e tests and daemon can actually talk to the db",
+                "e2e tests and curator can actually talk to the db",
                 "patch file rule",
                 "tts and keep my actual response minimal or empty",
                 "force push since the memory repo on github",

@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timezone
 from uuid import UUID
 
-from memory.daemon import build_client, close_client_resources, load_hermes_env
+from memory.curator_runtime import build_client, close_client_resources, load_hermes_env
 from memory.models import Session, normalize_platform
 from memory.recall import (
     delete_session,

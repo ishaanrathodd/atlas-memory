@@ -114,7 +114,7 @@ Avoid using `Hermes vs Memory` as architecture shorthand inside this document. T
 
 ## Architecture Correction
 
-The current scheduled daemon/cron setup was acceptable as a bootstrap path, but it should not remain the main memory operating model.
+The current scheduled curator/cron setup was acceptable as a bootstrap path, but it should not remain the main memory operating model.
 
 Target architecture:
 
