@@ -288,6 +288,24 @@ async def test_client_tracks_session_counts_and_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_store_message_rejects_tool_and_system_roles() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+
+    session = await client.start_session()
+
+    with pytest.raises(ValueError, match="only accepts user/assistant roles"):
+        await client.store_message(str(session.id), "tool", "tool call output blob")
+
+    with pytest.raises(ValueError, match="only accepts user/assistant roles"):
+        await client.store_message(str(session.id), "system", "internal system note")
+
+    stored_session = transport.sessions[str(session.id)]
+    assert stored_session.message_count == 0
+    assert stored_session.user_message_count == 0
+
+
+@pytest.mark.asyncio
 async def test_enrich_context_formats_facts_and_episodes() -> None:
     transport = InMemoryTransport()
     client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())

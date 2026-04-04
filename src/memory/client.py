@@ -144,12 +144,16 @@ class MemoryClient:
         platform: str = "local",
         agent_namespace: str | None = None,
     ) -> Episode:
+        normalized_role = str(role or "").strip().lower()
+        if normalized_role not in {EpisodeRole.USER.value, EpisodeRole.ASSISTANT.value}:
+            raise ValueError("store_message only accepts user/assistant roles for durable memory.")
+
         embedding = await self._safe_embed_text(content)
         emotion_profile = self.emotions.analyze(content)
         episode = Episode(
             session_id=session_id,
             agent_namespace=agent_namespace,
-            role=EpisodeRole(role),
+            role=EpisodeRole(normalized_role),
             content=content,
             content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
             embedding=embedding,
