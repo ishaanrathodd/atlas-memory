@@ -1540,6 +1540,8 @@ async def test_enrich_context_exact_recall_returns_verbatim_recent_user_messages
     assert "Exact recent user messages (verbatim):" in context
     assert "how would u like this to be get better?" in context
     assert "yes please. Also let me know when u call supabase" in context
+    assert "Verbatim transcript evidence:" in context
+    assert "quote_status=quote-backed" in context
     assert "Retrieval evidence:" in context
     assert "Mode: exact_transcript" in context
     assert "Relevant prior outcomes:" not in context
@@ -1561,6 +1563,9 @@ async def test_enrich_context_exact_recall_reports_missing_verbatim_history_clea
 
     assert "Exact recent user messages (verbatim):" in context
     assert "No exact prior user messages were available" in context
+    assert "Verbatim transcript evidence:" in context
+    assert "No raw transcript snippets were selected for this turn." in context
+    assert "quote_status=no-quote-available" in context
     assert "Retrieval evidence:" in context
     assert "Mode: exact_transcript" in context
 
@@ -1817,7 +1822,7 @@ async def test_enrich_context_emits_verbatim_snippets_for_semantic_mode() -> Non
     assert "Verbatim transcript evidence:" in context
     assert "Exact quote should be preserved, not paraphrased away." in context
     assert "wording=verbatim" in context
-    assert "quote_status=" in context
+    assert "quote_status=quote-backed" in context
 
 
 @pytest.mark.asyncio

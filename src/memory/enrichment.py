@@ -1662,9 +1662,12 @@ def _build_quote_coverage_lines(
     proactive_coach_lines: list[str],
     active_state_lines: list[str],
     relevant_episodes: list[Episode],
+    recent_episodes: list[Episode],
 ) -> list[str]:
     if exact_recall_query:
-        return ["Exact transcript mode active: recalled text is quote-backed via verbatim lines."]
+        if verbatim_evidence_lines:
+            return ["Exact transcript mode active: quote_status=quote-backed."]
+        return ["Exact transcript mode active: quote_status=no-quote-available."]
 
     claim_sections = {
         "facts": bool(facts),
@@ -1675,7 +1678,7 @@ def _build_quote_coverage_lines(
         "reflections": bool(reflections),
         "coach_notes": bool(proactive_coach_lines),
         "active_state": bool(active_state_lines),
-        "prior_conversations": bool(relevant_episodes),
+        "prior_conversations": bool(relevant_episodes or recent_episodes),
     }
 
     has_quote = bool(verbatim_evidence_lines)
@@ -2539,7 +2542,7 @@ async def collect_enrichment_payload(
         reflections=filtered_reflections,
         relevant_episodes=ranked_relevant_episodes,
     )
-    verbatim_evidence_lines = [] if exact_recall_query else _build_verbatim_evidence_lines(
+    verbatim_evidence_lines = _build_verbatim_evidence_lines(
         relevant_episodes=ranked_relevant_episodes,
         recent_episodes=filtered_recent_episodes,
     )
@@ -2555,6 +2558,7 @@ async def collect_enrichment_payload(
         proactive_coach_lines=proactive_coach_lines,
         active_state_lines=active_state_lines,
         relevant_episodes=ranked_relevant_episodes,
+        recent_episodes=filtered_recent_episodes,
     )
 
     return EnrichmentPayload(
