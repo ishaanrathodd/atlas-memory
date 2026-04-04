@@ -1708,3 +1708,103 @@ async def test_enrich_context_week_number_query_targets_requested_week_rollup() 
     assert "Recent major events:" in context
     assert "memory reliability, replay eval, and regression gates" in context
     assert "Focus drifted across too many initiatives" not in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_emits_trust_ledger_with_source_tags_and_freshness() -> None:
+    _, _, transport = _build_client_with_transport()
+    now = _utcnow()
+    transport.facts = {
+        str(uuid4()): _make_fact(
+            "Ishaan is a solo founder building Upstorr and optimizing AI-assisted workflows.",
+            category=FactCategory.IDENTITY,
+            tags=["identity", "career"],
+            hours_ago=2,
+        )
+    }
+    transport.decision_outcomes = [
+        DecisionOutcome(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=DecisionOutcomeKind.WORKFLOW,
+            title="checkout migration failure",
+            decision="Rushed checkout migration rollout without verification gates.",
+            outcome="Production regressions and rework consumed two days.",
+            lesson="Ship with replay-eval and CI regression gates before full rollout.",
+            outcome_key="auto:outcome:checkout-failure",
+            status=DecisionOutcomeStatus.FAILURE,
+            confidence=0.95,
+            importance_score=0.95,
+            event_time=now - timedelta(days=3),
+            tags=["checkout", "migration", "rollout"],
+        )
+    ]
+    transport.patterns = [
+        Pattern(
+            id=uuid4(),
+            agent_namespace="main",
+            pattern_type=PatternType.TRAP,
+            statement="Under deadline pressure, rollout speed tends to outrun verification depth.",
+            description="Repeated cross-session failure mode during shipping crunch windows.",
+            pattern_key="auto:pattern:verification-trap",
+            confidence=0.9,
+            frequency_score=0.85,
+            impact_score=0.9,
+            first_observed_at=now - timedelta(days=90),
+            last_observed_at=now - timedelta(days=2),
+            supporting_episode_ids=[],
+            supporting_session_ids=[],
+            tags=["rollout", "verification", "deadline"],
+        )
+    ]
+
+    context = await enrich_context(
+        transport,
+        "I am working on checkout migration rollout right now, what should I do?",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Trust ledger (source tags + freshness):" in context
+    assert "[source:fact]" in context
+    assert "[source:outcome]" in context
+    assert "[source:pattern]" in context
+    assert "freshness=" in context
+    assert "state=" in context
+    assert "wording=" in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_emits_verbatim_snippets_for_semantic_mode() -> None:
+    client, _, transport = _build_client_with_transport()
+    active_session = await client.start_session(platform="local")
+    previous_session = await client.start_session(platform="local")
+    previous_session_id = previous_session.id
+    assert previous_session_id is not None
+
+    transport.episodes = [
+        _make_episode(
+            "I messed this up before by rushing rollout without canary checks.",
+            session_id=previous_session_id,
+            minutes_ago=32,
+            platform=Platform.LOCAL,
+        ),
+        _make_episode(
+            "Exact quote should be preserved, not paraphrased away.",
+            session_id=previous_session_id,
+            minutes_ago=31,
+            platform=Platform.LOCAL,
+        ),
+    ]
+
+    context = await enrich_context(
+        transport,
+        "how should i handle this rollout now?",
+        platform="local",
+        active_session_id=str(active_session.id),
+        agent_namespace="main",
+    )
+
+    assert "Verbatim transcript evidence:" in context
+    assert "Exact quote should be preserved, not paraphrased away." in context
+    assert "wording=verbatim" in context

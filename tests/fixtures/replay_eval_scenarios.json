@@ -290,5 +290,58 @@
         }
       ]
     }
+  },
+  {
+    "id": "trust_ledger_visibility",
+    "description": "Memory output should expose source tags and freshness labels for trust.",
+    "user_message": "I am working on checkout migration rollout right now, what should I do?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "Trust ledger (source tags + freshness):",
+      "[source:fact]",
+      "[source:outcome]",
+      "freshness=",
+      "state=",
+      "wording=",
+      "Verbatim transcript evidence:"
+    ],
+    "min_counts": {
+      "proactive_coach_lines": 1,
+      "verbatim_evidence_lines": 1
+    },
+    "seed": {
+      "episodes": [
+        {
+          "agent_namespace": "main",
+          "role": "user",
+          "content": "Please do not repeat the same rushed rollout mistake.",
+          "platform": "telegram",
+          "message_timestamp": "2026-04-03T12:00:00Z"
+        }
+      ],
+      "facts": [
+        {
+          "agent_namespace": "main",
+          "content": "User prefers root-cause debugging before broad patches.",
+          "category": "habit",
+          "tags": ["debugging", "reliability"],
+          "confidence": 0.92
+        }
+      ],
+      "decision_outcomes": [
+        {
+          "agent_namespace": "main",
+          "kind": "workflow",
+          "status": "failure",
+          "decision": "Rushed checkout migration rollout without verification gates.",
+          "outcome": "Production regressions and rework consumed two days.",
+          "lesson": "Ship with replay-eval and CI regression gates before full rollout.",
+          "importance_score": 0.95,
+          "confidence": 0.95,
+          "tags": ["checkout", "migration", "rollout"]
+        }
+      ]
+    }
   }
 ]

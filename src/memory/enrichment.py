@@ -857,6 +857,8 @@ class EnrichmentPayload:
     active_session: Session | None
     exact_recall_mode: bool = False
     retrieval_evidence_lines: list[str] = field(default_factory=list)
+    trust_ledger_lines: list[str] = field(default_factory=list)
+    verbatim_evidence_lines: list[str] = field(default_factory=list)
 
     def format(self) -> str:
         sections = [
@@ -870,6 +872,8 @@ class EnrichmentPayload:
                 "- Prefer the current conversation if it conflicts with older memory."
             ),
             _format_retrieval_evidence(self.retrieval_evidence_lines),
+            _format_trust_ledger(self.trust_ledger_lines),
+            _format_verbatim_evidence(self.verbatim_evidence_lines),
             _format_directives(self.directives),
             _format_core_profile(self.core_profile_lines),
             _format_life_trajectory(self.life_trajectory_lines),
@@ -892,6 +896,18 @@ def _format_retrieval_evidence(lines: list[str]) -> str:
     if not lines:
         return ""
     return "Retrieval evidence:\n" + "\n".join(f"- {_normalize_text(line, max_length=320)}" for line in lines)
+
+
+def _format_trust_ledger(lines: list[str]) -> str:
+    if not lines:
+        return "Trust ledger (source tags + freshness):\n- No durable evidence surfaced for this turn."
+    return "Trust ledger (source tags + freshness):\n" + "\n".join(f"- {_normalize_text(line, max_length=360)}" for line in lines)
+
+
+def _format_verbatim_evidence(lines: list[str]) -> str:
+    if not lines:
+        return "Verbatim transcript evidence:\n- No raw transcript snippets were selected for this turn."
+    return "Verbatim transcript evidence:\n" + "\n".join(f"- {line}" for line in lines)
 
 
 def _format_core_profile(lines: list[str]) -> str:
@@ -1508,6 +1524,121 @@ def _latest_evidence_time(values: list[datetime | None]) -> datetime | None:
     if not concrete:
         return None
     return max(concrete)
+
+
+def _freshness_label(value: datetime | None) -> str:
+    if value is None:
+        return "unknown"
+    now = datetime.now(timezone.utc)
+    age = max((now - value).total_seconds(), 0.0)
+    if age < 24 * 3600:
+        return "fresh(<24h)"
+    if age < 7 * 24 * 3600:
+        return "recent(<7d)"
+    if age < 30 * 24 * 3600:
+        return "aging(<30d)"
+    return "stale(>=30d)"
+
+
+def _currentness_label(value: datetime | None, *, current_hours: int = 24 * 7) -> str:
+    if value is None:
+        return "background"
+    now = datetime.now(timezone.utc)
+    age = max((now - value).total_seconds(), 0.0)
+    return "current" if age <= float(current_hours * 3600) else "background"
+
+
+def _fact_currentness_label(fact: Fact) -> str:
+    observed = fact.updated_at or fact.created_at
+    if fact.category in {FactCategory.IDENTITY, FactCategory.RELATIONSHIP}:
+        return "background"
+    if fact.category in {FactCategory.PROJECT, FactCategory.GOAL, FactCategory.HABIT, FactCategory.HEALTH, FactCategory.FINANCE}:
+        return _currentness_label(observed, current_hours=24 * 14)
+    return _currentness_label(observed, current_hours=24 * 7)
+
+
+def _verbatim_clip(value: str, *, max_length: int = 260) -> str:
+    raw = (value or "").strip().replace("\n", "\\n")
+    if not raw:
+        return "(empty message)"
+    if len(raw) <= max_length:
+        return raw
+    return raw[: max_length - 3].rstrip() + "..."
+
+
+def _build_trust_ledger_lines(
+    *,
+    facts: list[Fact],
+    timeline_events: list[TimelineEvent],
+    decision_outcomes: list[DecisionOutcome],
+    patterns: list[Pattern],
+    reflections: list[Reflection],
+    relevant_episodes: list[Episode],
+) -> list[str]:
+    lines: list[str] = []
+
+    for episode in sorted(relevant_episodes, key=lambda item: item.message_timestamp, reverse=True)[:2]:
+        lines.append(
+            f"[source:episode] role={episode.role.value} platform={episode.platform.value} ts={episode.message_timestamp.isoformat()} freshness={_freshness_label(episode.message_timestamp)} state={_currentness_label(episode.message_timestamp, current_hours=24 * 3)} wording=verbatim"
+        )
+
+    for fact in facts[:2]:
+        observed = fact.updated_at or fact.created_at
+        lines.append(
+            f"[source:fact] category={fact.category.value} confidence={float(fact.confidence):.2f} observed={observed.isoformat() if observed else 'unknown'} freshness={_freshness_label(observed)} state={_fact_currentness_label(fact)} wording=derived"
+        )
+
+    for event in timeline_events[:1]:
+        lines.append(
+            f"[source:timeline] kind={event.kind.value} event_time={event.event_time.isoformat()} freshness={_freshness_label(event.event_time)} state={_currentness_label(event.event_time, current_hours=24 * 14)} wording=derived"
+        )
+
+    for outcome in decision_outcomes[:1]:
+        lines.append(
+            f"[source:outcome] status={outcome.status.value} confidence={float(outcome.confidence):.2f} event_time={outcome.event_time.isoformat()} freshness={_freshness_label(outcome.event_time)} state={_currentness_label(outcome.event_time, current_hours=24 * 14)} wording=derived"
+        )
+
+    for pattern in patterns[:1]:
+        lines.append(
+            f"[source:pattern] type={pattern.pattern_type.value} confidence={float(pattern.confidence):.2f} last_observed={pattern.last_observed_at.isoformat()} freshness={_freshness_label(pattern.last_observed_at)} state={_currentness_label(pattern.last_observed_at, current_hours=24 * 30)} wording=derived"
+        )
+
+    for reflection in reflections[:1]:
+        lines.append(
+            f"[source:reflection] status={reflection.status.value} confidence={float(reflection.confidence):.2f} last_observed={reflection.last_observed_at.isoformat()} freshness={_freshness_label(reflection.last_observed_at)} state={_currentness_label(reflection.last_observed_at, current_hours=24 * 30)} wording=derived"
+        )
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        normalized = " ".join(line.lower().split())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(line)
+    return deduped[:8]
+
+
+def _build_verbatim_evidence_lines(
+    *,
+    relevant_episodes: list[Episode],
+    recent_episodes: list[Episode],
+) -> list[str]:
+    combined = _dedupe_episodes(relevant_episodes + recent_episodes)
+    candidates = [
+        episode
+        for episode in sorted(combined, key=lambda item: item.message_timestamp, reverse=True)
+        if episode.role in {EpisodeRole.USER, EpisodeRole.ASSISTANT}
+        if not _looks_like_trivial_episode(episode.content)
+        if not _looks_like_reference_content(episode.content, getattr(episode, "message_metadata", {}) or {})
+        if not _looks_like_operational_content(episode.content, getattr(episode, "message_metadata", {}) or {})
+    ]
+    lines: list[str] = []
+    for episode in candidates[:3]:
+        lines.append(
+            f"{episode.message_timestamp.isoformat()} [{episode.role.value}, {episode.platform.value}] \"{_verbatim_clip(episode.content)}\""
+        )
+    return lines
 
 
 def _extract_requested_iso_week(value: str) -> tuple[int, int] | None:
@@ -2351,6 +2482,18 @@ async def collect_enrichment_payload(
         life_trajectory_lines=life_trajectory_lines,
         proactive_coach_lines=proactive_coach_lines,
     )
+    trust_ledger_lines = _build_trust_ledger_lines(
+        facts=ranked_facts,
+        timeline_events=filtered_timeline_events,
+        decision_outcomes=filtered_decision_outcomes,
+        patterns=filtered_patterns,
+        reflections=filtered_reflections,
+        relevant_episodes=ranked_relevant_episodes,
+    )
+    verbatim_evidence_lines = [] if exact_recall_query else _build_verbatim_evidence_lines(
+        relevant_episodes=ranked_relevant_episodes,
+        recent_episodes=filtered_recent_episodes,
+    )
 
     return EnrichmentPayload(
         facts=ranked_facts,
@@ -2371,6 +2514,8 @@ async def collect_enrichment_payload(
         active_session=active_session,
         exact_recall_mode=exact_recall_query,
         retrieval_evidence_lines=retrieval_evidence_lines,
+        trust_ledger_lines=trust_ledger_lines,
+        verbatim_evidence_lines=verbatim_evidence_lines,
     )
 
 
