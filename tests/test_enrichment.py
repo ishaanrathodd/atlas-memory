@@ -1512,3 +1512,199 @@ async def test_collect_enrichment_payload_surfaces_reflections_for_introspective
     assert payload.reflections
     assert payload.reflections[0].reflection_key == "auto:reflection:test-blind-spot"
     assert transport.last_list_reflections_namespace == "main"
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_exact_recall_returns_verbatim_recent_user_messages() -> None:
+    client, _, transport = _build_client_with_transport()
+    active_session = await client.start_session(platform="signal")
+    previous_session = await client.start_session(platform="signal")
+
+    previous_session_id = previous_session.id
+    assert previous_session_id is not None
+
+    transport.episodes = [
+        _make_episode("how would u like this to be get better?", session_id=previous_session_id, minutes_ago=14, platform=Platform.LOCAL),
+        _make_episode("yes please. Also let me know when u call supabase", session_id=previous_session_id, minutes_ago=13, platform=Platform.LOCAL),
+        _make_episode("source freshness confidence and why this matched", session_id=previous_session_id, minutes_ago=12, platform=Platform.LOCAL),
+    ]
+
+    context = await enrich_context(
+        transport,
+        "before this session what were my last few texts to you?",
+        platform="signal",
+        active_session_id=str(active_session.id),
+        agent_namespace="main",
+    )
+
+    assert "Exact recent user messages (verbatim):" in context
+    assert "how would u like this to be get better?" in context
+    assert "yes please. Also let me know when u call supabase" in context
+    assert "Retrieval evidence:" in context
+    assert "Mode: exact_transcript" in context
+    assert "Relevant prior outcomes:" not in context
+    assert "Relevant patterns:" not in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_exact_recall_reports_missing_verbatim_history_cleanly() -> None:
+    client, _, transport = _build_client_with_transport()
+    active_session = await client.start_session(platform="local")
+
+    context = await enrich_context(
+        transport,
+        "what were my last few messages before this session?",
+        platform="local",
+        active_session_id=str(active_session.id),
+        agent_namespace="main",
+    )
+
+    assert "Exact recent user messages (verbatim):" in context
+    assert "No exact prior user messages were available" in context
+    assert "Retrieval evidence:" in context
+    assert "Mode: exact_transcript" in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_injects_always_known_profile_for_non_profile_queries() -> None:
+    _, _, transport = _build_client_with_transport()
+    identity_fact = _make_fact(
+        "Ishaan is a solo founder building Upstorr and optimizing AI-assisted workflows.",
+        category=FactCategory.IDENTITY,
+        tags=["identity", "career"],
+        hours_ago=1,
+    )
+    goal_fact = _make_fact(
+        "Current long-term goal is building a reliable always-on assistant for life and work.",
+        category=FactCategory.GOAL,
+        tags=["assistant", "long-term"],
+        hours_ago=2,
+    )
+    transport.facts = {
+        str(identity_fact.id): identity_fact,
+        str(goal_fact.id): goal_fact,
+    }
+
+    context = await enrich_context(
+        transport,
+        "help me plan today's execution path",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Always-known user profile:" in context
+    assert "Ishaan is a solo founder building Upstorr" in context
+    assert "Current long-term goal is building a reliable always-on assistant" in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_proactive_coach_warns_using_past_failures_and_wins() -> None:
+    _, _, transport = _build_client_with_transport()
+    now = _utcnow()
+    transport.decision_outcomes = [
+        DecisionOutcome(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=DecisionOutcomeKind.WORKFLOW,
+            title="checkout migration failure",
+            decision="Rushed checkout migration rollout without verification gates.",
+            outcome="Production regressions and rework consumed two days.",
+            lesson="Ship with replay-eval and CI regression gates before full rollout.",
+            outcome_key="auto:outcome:checkout-failure",
+            status=DecisionOutcomeStatus.FAILURE,
+            confidence=0.95,
+            importance_score=0.95,
+            event_time=now - timedelta(days=20),
+            tags=["checkout", "migration", "rollout"],
+        ),
+        DecisionOutcome(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=DecisionOutcomeKind.WORKFLOW,
+            title="checkout migration success",
+            decision="Staged checkout migration with replay harness and canary checks.",
+            outcome="Cut regressions and reduced rollback risk significantly.",
+            lesson="Start with canary plus replay coverage, then gradual traffic ramp.",
+            outcome_key="auto:outcome:checkout-success",
+            status=DecisionOutcomeStatus.SUCCESS,
+            confidence=0.92,
+            importance_score=0.91,
+            event_time=now - timedelta(days=10),
+            tags=["checkout", "migration", "rollout"],
+        ),
+    ]
+    transport.patterns = [
+        Pattern(
+            id=uuid4(),
+            agent_namespace="main",
+            pattern_type=PatternType.TRAP,
+            statement="Under deadline pressure, rollout speed tends to outrun verification depth.",
+            description="Repeated cross-session failure mode during shipping crunch windows.",
+            pattern_key="auto:pattern:verification-trap",
+            confidence=0.9,
+            frequency_score=0.85,
+            impact_score=0.9,
+            first_observed_at=now - timedelta(days=90),
+            last_observed_at=now - timedelta(days=2),
+            supporting_episode_ids=[],
+            supporting_session_ids=[],
+            tags=["rollout", "verification", "deadline"],
+        )
+    ]
+
+    context = await enrich_context(
+        transport,
+        "I am working on checkout migration rollout right now, what should I do?",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Proactive coach notes:" in context
+    assert "Past risk to avoid:" in context
+    assert "Proven better path:" in context
+    assert "Recurring trap signal:" in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_week_number_query_targets_requested_week_rollup() -> None:
+    _, _, transport = _build_client_with_transport()
+    week_32_event_time = datetime.fromisocalendar(2026, 32, 3).replace(tzinfo=timezone.utc)
+    week_31_event_time = datetime.fromisocalendar(2026, 31, 3).replace(tzinfo=timezone.utc)
+    week_32_title_date = datetime.fromisocalendar(2026, 32, 1).date().isoformat()
+    week_31_title_date = datetime.fromisocalendar(2026, 31, 1).date().isoformat()
+
+    transport.timeline_events = [
+        TimelineEvent(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=TimelineEventKind.WEEK_SUMMARY,
+            title=f"Week of {week_31_title_date}",
+            summary="Focus drifted across too many initiatives and no single thread dominated.",
+            event_key="auto:timeline-rollup:week-31",
+            event_time=week_31_event_time,
+            tags=["week-summary"],
+            importance_score=0.72,
+        ),
+        TimelineEvent(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=TimelineEventKind.WEEK_SUMMARY,
+            title=f"Week of {week_32_title_date}",
+            summary="The main recurring topic was memory reliability, replay eval, and regression gates.",
+            event_key="auto:timeline-rollup:week-32",
+            event_time=week_32_event_time,
+            tags=["week-summary", "memory"],
+            importance_score=0.83,
+        ),
+    ]
+
+    context = await enrich_context(
+        transport,
+        "in the timeline, what topic did we keep returning to in week 32 of 2026?",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Recent major events:" in context
+    assert "memory reliability, replay eval, and regression gates" in context
+    assert "Focus drifted across too many initiatives" not in context
