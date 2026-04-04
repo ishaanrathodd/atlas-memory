@@ -894,6 +894,99 @@ async def test_refresh_directives_skips_internal_system_style_clauses() -> None:
 
 
 @pytest.mark.asyncio
+async def test_refresh_directives_extracts_preference_style_tone_rule() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+    session = _make_session(
+        started_at=now - timedelta(days=1),
+        message_count=2,
+        summary="Defined communication preferences.",
+    ).model_copy(update={"agent_namespace": "main"})
+    transport.sessions[str(session.id)] = session
+    transport.episodes_by_session[str(session.id)] = [
+        _make_episode(str(session.id), EpisodeRole.USER, "I prefer you keep replies short, direct, and human.", 0).model_copy(
+            update={"agent_namespace": "main"}
+        ),
+    ]
+
+    stats = await refresh_directives(client, now=now, agent_namespace="main")
+
+    assert stats["directives_upserted"] == 1
+    assert transport.directives[0].kind.value == "communication"
+    assert "short, direct, and human" in transport.directives[0].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_refresh_directives_skips_one_off_temporal_instruction() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+    session = _make_session(
+        started_at=now - timedelta(days=1),
+        message_count=2,
+        summary="One-off formatting request.",
+    ).model_copy(update={"agent_namespace": "main"})
+    transport.sessions[str(session.id)] = session
+    transport.episodes_by_session[str(session.id)] = [
+        _make_episode(str(session.id), EpisodeRole.USER, "Please keep it bullet points for this message only.", 0).model_copy(
+            update={"agent_namespace": "main"}
+        ),
+    ]
+
+    stats = await refresh_directives(client, now=now, agent_namespace="main")
+
+    assert stats["directives_upserted"] == 0
+    assert not transport.directives
+
+
+@pytest.mark.asyncio
+async def test_refresh_directives_does_not_supersede_recent_unseen_directive_due_to_scan_limit() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+
+    for idx in range(70):
+        started_at = now - timedelta(days=idx + 1)
+        session = _make_session(
+            started_at=started_at,
+            message_count=1,
+            summary=f"Session {idx}",
+        ).model_copy(update={"agent_namespace": "main"})
+        transport.sessions[str(session.id)] = session
+        transport.episodes_by_session[str(session.id)] = [
+            _make_episode(str(session.id), EpisodeRole.USER, "Quick status update.", 0).model_copy(
+                update={"agent_namespace": "main"}
+            ),
+        ]
+
+    last_observed = now - timedelta(days=20)
+    stored = Directive(
+        directive_key="auto:directive:seeded-recent",
+        kind="communication",
+        title="Tone/style rule",
+        content="From now on, talk casually and keep it concise.",
+        status="active",
+        confidence=0.95,
+        priority_score=1.0,
+        source_episode_ids=[],
+        source_session_ids=[],
+        tags=["derived", "directive"],
+        created_at=last_observed,
+        updated_at=last_observed,
+        last_observed_at=last_observed,
+        agent_namespace="main",
+    )
+    transport.directives.append(stored)
+
+    stats = await refresh_directives(client, now=now, agent_namespace="main")
+
+    assert stats["directives_superseded"] == 0
+    refreshed = next(item for item in transport.directives if item.directive_key == "auto:directive:seeded-recent")
+    assert refreshed.status.value == "active"
+
+
+@pytest.mark.asyncio
 async def test_refresh_timeline_events_materializes_session_summaries() -> None:
     transport = CuratorRuntimeTransport()
     client = _make_client(transport)

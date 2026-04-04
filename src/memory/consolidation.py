@@ -45,7 +45,7 @@ ACTIVE_STATE_SESSION_LIMIT = 8
 ACTIVE_STATE_EPISODE_LIMIT = 24
 ACTIVE_STATE_FACT_LIMIT = 64
 DIRECTIVES_LOOKBACK_DAYS = 90
-DIRECTIVES_SESSION_LIMIT = 16
+DIRECTIVES_SESSION_LIMIT = 64
 COMMITMENTS_LOOKBACK_DAYS = 365
 COMMITMENTS_SESSION_LIMIT = 24
 CORRECTIONS_LOOKBACK_DAYS = 365
@@ -87,6 +87,16 @@ _DIRECTIVE_MARKERS = (
     "please dont",
     "without asking",
     "no more",
+    "from now on",
+    "going forward",
+    "talk",
+    "speak",
+    "write",
+    "tone",
+    "style",
+    "prefer",
+    "preference",
+    "keep",
 )
 _DIRECTIVE_PREFIXES = (
     "always ",
@@ -101,6 +111,11 @@ _DIRECTIVE_PREFIXES = (
     "if i tell you ",
     "when i tell you ",
     "whenever i tell you ",
+    "from now on ",
+    "going forward ",
+    "keep ",
+    "i prefer ",
+    "my preference is ",
 )
 _DIRECTIVE_TARGET_HINTS = (
     "you",
@@ -114,6 +129,10 @@ _DIRECTIVE_TARGET_HINTS = (
     "message",
     "text",
     "respond",
+    "tone",
+    "style",
+    "wording",
+    "language",
 )
 _DIRECTIVE_ACTION_HINTS = (
     "delegate",
@@ -131,6 +150,12 @@ _DIRECTIVE_ACTION_HINTS = (
     "message",
     "call",
     "schedule",
+    "talk",
+    "speak",
+    "write",
+    "phrase",
+    "format",
+    "keep",
 )
 _DIRECTIVE_QUESTION_PREFIXES = (
     "what ",
@@ -143,6 +168,18 @@ _DIRECTIVE_QUESTION_PREFIXES = (
     "would you",
     "do you",
 )
+_DIRECTIVE_NON_PERSIST_MARKERS = (
+    "for this message",
+    "for this reply",
+    "for this response",
+    "for this question",
+    "just this message",
+    "just this reply",
+    "this time only",
+    "for now only",
+    "today only",
+    "only for now",
+)
 _DIRECTIVE_REJECT_MARKERS = (
     "you died",
     "you forgot",
@@ -151,14 +188,14 @@ _DIRECTIVE_REJECT_MARKERS = (
     "we don't",
     "i dont use",
     "i don't use",
-    "no u wont",
+    "no you wont",
     "no you won't",
     "respond to the user",
     "[system:",
     "session is about to be automatically reset",
 )
 _DIRECTIVE_LEAD_IN_RE = re.compile(
-    r"^(?:(?:and|but|so|okay|ok|bro|bhai|yar|yaar|listen)\s*,?\s*)+",
+    r"^(?:(?:and|but|so|okay|ok|hey|listen|note)\s*,?\s*)+",
     re.IGNORECASE,
 )
 _BLOCKER_MARKERS = (
@@ -1025,8 +1062,6 @@ def _looks_like_implementation_project_content(value: str, tags: list[str] | Non
     )
     if any(marker in combined for marker in markers):
         return True
-    if any(marker in lowered for marker in ("lmao", "are u crazy", "are you crazy", "wont share the same", "won't share the same")):
-        return True
     if lowered.startswith(("**", "\"**", "-", "from the memory project", "what's next on the memory project")):
         return True
     return False
@@ -1062,7 +1097,7 @@ def _decision_outcome_key(session: Session) -> str:
 
 def _directive_kind(content: str) -> str:
     lowered = content.lower()
-    if any(marker in lowered for marker in ("em dash", "markdown", "emoji", "reply", "text me", "send me", "voice")):
+    if any(marker in lowered for marker in ("em dash", "markdown", "emoji", "reply", "replies", "text me", "send me", "voice", "tone", "style", "speak", "talk", "write")):
         return "communication"
     if any(marker in lowered for marker in ("delegate", "tool", "codex", "subagent", "restart", "git", "sql")):
         return "tooling"
@@ -1079,6 +1114,8 @@ def _directive_title(content: str) -> str:
         return "No em dashes"
     if "emoji" in lowered:
         return "Emoji rule"
+    if "tone" in lowered or "style" in lowered or "speak" in lowered or "talk" in lowered:
+        return "Tone/style rule"
     if "reply" in lowered or "send me" in lowered:
         return "Reply style"
     return "Standing rule"
@@ -1106,9 +1143,20 @@ def _is_directive_clause(clause: str) -> bool:
         return False
     if lowered.startswith(_DIRECTIVE_QUESTION_PREFIXES):
         return False
+    if any(marker in lowered for marker in _DIRECTIVE_NON_PERSIST_MARKERS):
+        return False
     if any(marker in lowered for marker in _DIRECTIVE_REJECT_MARKERS):
         return False
-    if lowered.startswith(("i ", "we ", "my ", "our ")) and not lowered.startswith(("if i tell you ", "when i tell you ", "whenever i tell you ", "i want you to ")):
+    if lowered.startswith(("i ", "we ", "my ", "our ")) and not lowered.startswith(
+        (
+            "if i tell you ",
+            "when i tell you ",
+            "whenever i tell you ",
+            "i want you to ",
+            "i prefer ",
+            "my preference is ",
+        )
+    ):
         return False
     if not any(lowered.startswith(prefix) for prefix in _DIRECTIVE_PREFIXES):
         return False
@@ -1122,11 +1170,22 @@ def _is_directive_clause(clause: str) -> bool:
 
 
 def _extract_directive_clauses(content: str) -> list[str]:
-    clauses = []
+    clauses: list[str] = []
+    seen: set[str] = set()
     for raw_clause in _DIRECTIVE_CLAUSE_SPLIT.split(content or ""):
+        normalized_raw = _normalize_directive_clause(raw_clause)
+        if normalized_raw and _is_directive_clause(normalized_raw):
+            key = normalized_raw.lower()
+            if key not in seen:
+                clauses.append(normalized_raw)
+                seen.add(key)
+            continue
         for subclause in _directive_subclauses(raw_clause):
             if _is_directive_clause(subclause):
-                clauses.append(subclause)
+                key = subclause.lower()
+                if key not in seen:
+                    clauses.append(subclause)
+                    seen.add(key)
     return clauses
 
 
@@ -2515,6 +2574,9 @@ async def refresh_directives(
         if "derived" not in existing.tags:
             continue
         if existing.directive_key in emitted_keys:
+            continue
+        # Avoid false superseding when recent directives fall outside the session scan limit.
+        if existing.last_observed_at is not None and existing.last_observed_at >= since:
             continue
         await client.upsert_directive(
             existing.model_copy(

@@ -57,9 +57,76 @@ What is still actively left:
 - user-facing forget / revoke / override flows
 - proactive presence / heartbeat behavior
 - optional future multi-profile registry and visibility model
-- observability and SLOs for memory quality/latency/cost (not just unit tests)
-- replay/eval harness and regression gates in CI
+- deeper long-horizon evaluation coverage (LLM-in-the-loop + adversarial temporal suites), beyond deterministic replay fixtures
 - retirement plan for old unused tables/views after confidence windows
+
+
+## High-Uplift Tech Decision (`2026-04-05`)
+
+Final recommendation:
+
+- implement a `Temporal Memory Graph` in Supabase (`Postgres + pgvector`) and add graph-aware retrieval as a first-class route
+
+This is the single highest-impact addition because it upgrades Memory from “retrieve similar snippets” to “reason over evolving relationships across months/years.”
+
+### Tech stack to add now (high impact only)
+
+1. `Temporal Memory Graph` layer in Supabase
+- new graph tables:
+  - `memory_entities`
+  - `memory_relations`
+  - `relation_evidence`
+  - `relation_validity` (`valid_from`, `valid_to`, `superseded_by`, `confidence`)
+- benefit: explicit lifecycle handling (what became true, false, or outdated over time)
+
+2. Graph-aware retrieval route (`long_horizon_reasoning`)
+- add an intent route that retrieves:
+  - multi-hop graph neighborhoods
+  - contradiction/supersession edges
+  - timeline rollups
+- fuse with existing semantic+keyword retrieval (RRF/hybrid ranking)
+- benefit: materially better “connect the dots” reasoning
+
+3. Optional orchestrator for graph extraction/querying (`LlamaIndex PropertyGraphIndex`)
+- use for extractor/retriever plumbing and custom graph retrievers
+- keep Supabase as source-of-truth; orchestrator is optional infra, not ownership boundary
+- benefit: faster implementation speed without locking product logic to a framework
+
+4. Long-horizon eval expansion (LLM-in-the-loop)
+- keep deterministic replay gates
+- add hard temporal/multi-hop eval suites judged for factual support and chain consistency
+- benefit: catches subtle regressions deterministic string checks miss
+
+### What this improves (questions to ask the agent)
+
+Use these prompts as acceptance checks for the new graph layer:
+
+1. Recurring trap detection
+- `what pattern keeps repeating every month that hurts execution?`
+- expected improvement: identifies repeated causal chain, not just isolated reminders
+
+2. Cross-month causal reasoning
+- `connect the January redesign decision to the March delay; what were the intermediate steps?`
+- expected improvement: explains multi-hop path (`decision -> dependency shift -> bottleneck -> delay`) with evidence
+
+3. Contradiction and change tracking
+- `what did we believe 6 weeks ago that is no longer true now?`
+- expected improvement: returns superseded claims and why they changed
+
+4. Long-range planning continuity
+- `based on the last 3 similar project attempts, what plan has the highest chance of working now?`
+- expected improvement: synthesizes outcomes across attempts instead of citing one anecdote
+
+5. Relationship-aware coaching
+- `which open commitments are blockers for other goals right now?`
+- expected improvement: surfaces dependency graph of commitments/outcomes
+
+### What not to over-invest in first
+
+- do not do full enterprise GraphRAG indexing complexity on day one
+- do not add more generic vector retrieval tweaks as the primary roadmap
+
+Start with `Temporal Memory Graph + graph-aware route` first, then decide whether full GraphRAG indexing modes are needed.
 
 
 ## Strategic Direction
@@ -702,11 +769,12 @@ If continuing from the current state, work in this order:
 
 1. Atlas provider seam + setup UX (`hermes memory setup` quality)
 2. genericization pass across extraction/enrichment and retrieval ranking
-3. `reflections`
-4. user-facing forget / revoke / override flows
-5. observability + eval harness + regression gates
-6. proactive presence / heartbeat behavior
-7. optional future multi-profile registry and visibility model
+3. long-horizon graph reasoning (`Temporal Memory Graph` + graph-aware retrieval route)
+4. `reflections`
+5. user-facing forget / revoke / override flows
+6. observability hardening (SLOs/alerts) + LLM-in-the-loop long-horizon eval expansion
+7. proactive presence / heartbeat behavior
+8. optional future multi-profile registry and visibility model
 
 Rationale:
 
@@ -985,31 +1053,37 @@ This is the actual highest-value remaining sequence now:
 - turn raw lines into sharper current-life summaries
 - tune active-state freshness and phrasing using replay evals
 
-5. `reflections`
+5. long-horizon graph reasoning
+- add temporal entity/relation graph tables and evidence links
+- add graph-aware retrieval for multi-hop/cross-month questions
+
+6. `reflections`
 - implement cautiously with evidence and reversibility
 
-6. user controls and trust UX
+7. user controls and trust UX
 - implement forget / revoke / override flows on top of commitments/corrections layers
 
-7. observability and eval harness
+8. observability hardening and eval expansion
 - add latency/cost/quality metrics and alert thresholds
-- add replay suite and CI regression gates
+- keep replay/CI regression gates and add LLM-in-the-loop temporal suites
 
-8. proactive presence / heartbeat
+9. proactive presence / heartbeat
 - inactivity awareness
 - open-loop follow-up
 - check-in logic
 
-5. Advice
+### Additional eval categories
+
+8. Advice
 - does Memory use past outcomes and patterns helpfully?
 
-6. Corrections
+9. Corrections
 - does Memory stop repeating corrected mistakes?
 
-7. Commitments
+10. Commitments
 - does Memory remember promises it made?
 
-8. Time awareness
+11. Time awareness
 - does Memory know whether it is morning, afternoon, or late night right now?
 
 ### Suggested eval prompts
