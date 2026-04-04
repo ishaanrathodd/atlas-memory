@@ -859,6 +859,7 @@ class EnrichmentPayload:
     retrieval_evidence_lines: list[str] = field(default_factory=list)
     trust_ledger_lines: list[str] = field(default_factory=list)
     verbatim_evidence_lines: list[str] = field(default_factory=list)
+    quote_coverage_lines: list[str] = field(default_factory=list)
 
     def format(self) -> str:
         sections = [
@@ -874,6 +875,7 @@ class EnrichmentPayload:
             _format_retrieval_evidence(self.retrieval_evidence_lines),
             _format_trust_ledger(self.trust_ledger_lines),
             _format_verbatim_evidence(self.verbatim_evidence_lines),
+            _format_quote_coverage(self.quote_coverage_lines),
             _format_directives(self.directives),
             _format_core_profile(self.core_profile_lines),
             _format_life_trajectory(self.life_trajectory_lines),
@@ -908,6 +910,12 @@ def _format_verbatim_evidence(lines: list[str]) -> str:
     if not lines:
         return "Verbatim transcript evidence:\n- No raw transcript snippets were selected for this turn."
     return "Verbatim transcript evidence:\n" + "\n".join(f"- {line}" for line in lines)
+
+
+def _format_quote_coverage(lines: list[str]) -> str:
+    if not lines:
+        return "Quote coverage checks:\n- No recalled claims required quote coverage on this turn."
+    return "Quote coverage checks:\n" + "\n".join(f"- {_normalize_text(line, max_length=360)}" for line in lines)
 
 
 def _format_core_profile(lines: list[str]) -> str:
@@ -1638,6 +1646,47 @@ def _build_verbatim_evidence_lines(
         lines.append(
             f"{episode.message_timestamp.isoformat()} [{episode.role.value}, {episode.platform.value}] \"{_verbatim_clip(episode.content)}\""
         )
+    return lines
+
+
+def _build_quote_coverage_lines(
+    *,
+    exact_recall_query: bool,
+    verbatim_evidence_lines: list[str],
+    facts: list[Fact],
+    core_profile_lines: list[str],
+    timeline_events: list[TimelineEvent],
+    decision_outcomes: list[DecisionOutcome],
+    patterns: list[Pattern],
+    reflections: list[Reflection],
+    proactive_coach_lines: list[str],
+    active_state_lines: list[str],
+    relevant_episodes: list[Episode],
+) -> list[str]:
+    if exact_recall_query:
+        return ["Exact transcript mode active: recalled text is quote-backed via verbatim lines."]
+
+    claim_sections = {
+        "facts": bool(facts),
+        "core_profile": bool(core_profile_lines),
+        "timeline": bool(timeline_events),
+        "outcomes": bool(decision_outcomes),
+        "patterns": bool(patterns),
+        "reflections": bool(reflections),
+        "coach_notes": bool(proactive_coach_lines),
+        "active_state": bool(active_state_lines),
+        "prior_conversations": bool(relevant_episodes),
+    }
+
+    has_quote = bool(verbatim_evidence_lines)
+    lines: list[str] = []
+    for section, present in claim_sections.items():
+        if not present:
+            continue
+        if has_quote:
+            lines.append(f"section={section} quote_status=quote-backed")
+        else:
+            lines.append(f"section={section} quote_status=no-quote-available")
     return lines
 
 
@@ -2494,6 +2543,19 @@ async def collect_enrichment_payload(
         relevant_episodes=ranked_relevant_episodes,
         recent_episodes=filtered_recent_episodes,
     )
+    quote_coverage_lines = _build_quote_coverage_lines(
+        exact_recall_query=exact_recall_query,
+        verbatim_evidence_lines=verbatim_evidence_lines,
+        facts=ranked_facts,
+        core_profile_lines=core_profile_lines,
+        timeline_events=filtered_timeline_events,
+        decision_outcomes=filtered_decision_outcomes,
+        patterns=filtered_patterns,
+        reflections=filtered_reflections,
+        proactive_coach_lines=proactive_coach_lines,
+        active_state_lines=active_state_lines,
+        relevant_episodes=ranked_relevant_episodes,
+    )
 
     return EnrichmentPayload(
         facts=ranked_facts,
@@ -2516,6 +2578,7 @@ async def collect_enrichment_payload(
         retrieval_evidence_lines=retrieval_evidence_lines,
         trust_ledger_lines=trust_ledger_lines,
         verbatim_evidence_lines=verbatim_evidence_lines,
+        quote_coverage_lines=quote_coverage_lines,
     )
 
 

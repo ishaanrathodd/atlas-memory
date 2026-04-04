@@ -516,6 +516,7 @@ async def evaluate_replay_scenario(scenario: ReplayScenario) -> dict[str, Any]:
         "life_trajectory_lines": len(payload.life_trajectory_lines),
         "proactive_coach_lines": len(payload.proactive_coach_lines),
         "verbatim_evidence_lines": len(payload.verbatim_evidence_lines),
+        "quote_coverage_lines": len(payload.quote_coverage_lines),
         "continuity_handoff_lines": len(payload.continuity_handoff_lines),
         "relevant_episodes": len(payload.relevant_episodes),
         "recent_episodes": len(payload.recent_episodes),

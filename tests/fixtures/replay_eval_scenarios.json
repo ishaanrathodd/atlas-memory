@@ -304,11 +304,14 @@
       "freshness=",
       "state=",
       "wording=",
-      "Verbatim transcript evidence:"
+      "Verbatim transcript evidence:",
+      "Quote coverage checks:",
+      "quote_status=quote-backed"
     ],
     "min_counts": {
       "proactive_coach_lines": 1,
-      "verbatim_evidence_lines": 1
+      "verbatim_evidence_lines": 1,
+      "quote_coverage_lines": 1
     },
     "seed": {
       "episodes": [

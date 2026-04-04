@@ -1772,6 +1772,8 @@ async def test_enrich_context_emits_trust_ledger_with_source_tags_and_freshness(
     assert "freshness=" in context
     assert "state=" in context
     assert "wording=" in context
+    assert "Quote coverage checks:" in context
+    assert "quote_status=no-quote-available" in context
 
 
 @pytest.mark.asyncio
@@ -1796,6 +1798,13 @@ async def test_enrich_context_emits_verbatim_snippets_for_semantic_mode() -> Non
             platform=Platform.LOCAL,
         ),
     ]
+    rollout_fact = _make_fact(
+        "User has repeatedly faced rollout regressions when verification was skipped.",
+        category=FactCategory.PROJECT,
+        tags=["rollout", "verification"],
+        hours_ago=2,
+    )
+    transport.facts = {str(rollout_fact.id): rollout_fact}
 
     context = await enrich_context(
         transport,
@@ -1808,3 +1817,27 @@ async def test_enrich_context_emits_verbatim_snippets_for_semantic_mode() -> Non
     assert "Verbatim transcript evidence:" in context
     assert "Exact quote should be preserved, not paraphrased away." in context
     assert "wording=verbatim" in context
+    assert "quote_status=" in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_quote_coverage_marks_no_quote_when_no_snippet_available() -> None:
+    _, _, transport = _build_client_with_transport()
+    transport.facts = {
+        str(uuid4()): _make_fact(
+            "Current long-term goal is building a reliable always-on assistant for life and work.",
+            category=FactCategory.GOAL,
+            tags=["assistant", "long-term"],
+            hours_ago=2,
+        )
+    }
+
+    context = await enrich_context(
+        transport,
+        "what do you know about my long-term direction?",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Quote coverage checks:" in context
+    assert "quote_status=no-quote-available" in context
