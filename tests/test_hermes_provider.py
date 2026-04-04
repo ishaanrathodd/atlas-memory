@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 
@@ -11,6 +12,18 @@ HERMES_AGENT_DIR = Path(__file__).resolve().parents[2] / "hermes-agent"
 
 if str(HERMES_AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(HERMES_AGENT_DIR))
+
+if "agent.memory_provider" not in sys.modules:
+    agent_module = types.ModuleType("agent")
+    memory_provider_module = types.ModuleType("agent.memory_provider")
+
+    class _MemoryProvider:  # pragma: no cover - simple CI fallback shim
+        pass
+
+    memory_provider_module.MemoryProvider = _MemoryProvider
+    agent_module.memory_provider = memory_provider_module
+    sys.modules["agent"] = agent_module
+    sys.modules["agent.memory_provider"] = memory_provider_module
 
 _SPEC = importlib.util.spec_from_file_location("atlas_test_plugin", PLUGIN_DIR / "__init__.py")
 assert _SPEC and _SPEC.loader

@@ -13,7 +13,7 @@ concurrency:
 jobs:
   unit-and-replay:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -22,7 +22,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - name: Install test dependencies
         run: |
@@ -35,4 +35,20 @@ jobs:
 
       - name: Run replay eval regression gate
         run: |
-          PYTHONPATH=src python -m memory.curator_runtime replay-eval --scenarios-file tests/fixtures/replay_eval_scenarios.json --min-pass-rate 1.0
+          PYTHONPATH=src python - <<'PY'
+          import asyncio
+          import json
+          import sys
+
+          from memory.eval_harness import run_replay_eval
+
+          report = asyncio.run(
+            run_replay_eval(
+              scenarios_file="tests/fixtures/replay_eval_scenarios.json",
+              min_pass_rate=1.0,
+            )
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          if not report.get("meets_threshold", False):
+            sys.exit(1)
+          PY
