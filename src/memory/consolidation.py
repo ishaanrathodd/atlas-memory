@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 import hashlib
 import os
@@ -35,6 +36,9 @@ from memory.transport import (
 
 DEFAULT_SUMMARY_MODEL = "glm-5-turbo"
 MAX_SUMMARY_LENGTH = 500
+_CONSOLIDATION_RETRY_ATTEMPTS = 3
+_CONSOLIDATION_RETRY_BASE_DELAY_SECONDS = 0.4
+_CONSOLIDATION_RETRY_MAX_DELAY_SECONDS = 2.0
 ACTIVE_STATE_LOOKBACK_HOURS = 72
 ACTIVE_STATE_SESSION_LIMIT = 8
 ACTIVE_STATE_EPISODE_LIMIT = 24
@@ -538,6 +542,54 @@ def _log(message: str) -> None:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _coerce_optional_datetime(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _is_retryable_consolidation_error(exc: Exception) -> bool:
+    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException, httpx.TransportError, OSError)):
+        return True
+    if isinstance(exc, ValueError):
+        lowered = str(exc).lower()
+        if "must be configured" in lowered:
+            return False
+        return True
+    return False
+
+
+async def _run_with_retries(
+    operation,
+    *,
+    label: str,
+    attempts: int = _CONSOLIDATION_RETRY_ATTEMPTS,
+    base_delay_seconds: float = _CONSOLIDATION_RETRY_BASE_DELAY_SECONDS,
+    max_delay_seconds: float = _CONSOLIDATION_RETRY_MAX_DELAY_SECONDS,
+):
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            return await operation()
+        except Exception as exc:
+            can_retry = attempt < attempts and _is_retryable_consolidation_error(exc)
+            if not can_retry:
+                raise
+            delay = min(max_delay_seconds, base_delay_seconds * (2 ** (attempt - 1)))
+            _log(f"Retrying {label} in {delay:.1f}s after error ({attempt}/{attempts}): {exc}")
+            await asyncio.sleep(delay)
 
 
 def _coerce_session(value: Session | dict[str, Any]) -> Session:
@@ -3038,6 +3090,85 @@ async def summarize_session_with_llm(
             await client.aclose()
 
 
+async def consolidate_session_if_needed(
+    client: MemoryClient,
+    session_id: str,
+    *,
+    min_message_count: int = 3,
+    now: datetime | None = None,
+    http_client: httpx.AsyncClient | None = None,
+    llm_api_key: str | None = None,
+    llm_base_url: str | None = None,
+    llm_model: str | None = None,
+    agent_namespace: str | None = None,
+) -> dict[str, Any]:
+    reference_time = now or _utcnow()
+    stats: dict[str, Any] = {
+        "session_id": session_id,
+        "session_processed": False,
+        "summary_generated": False,
+        "summary_skipped": False,
+        "facts_extracted": 0,
+        "errors": 0,
+        "error": None,
+        "reason": None,
+    }
+
+    try:
+        session = await client.transport.get_session(session_id)
+        if session is None:
+            stats["reason"] = "missing-session"
+            return stats
+        if not _agent_namespace_matches(session.agent_namespace, agent_namespace):
+            stats["reason"] = "namespace-mismatch"
+            return stats
+
+        episodes = await _list_session_episodes(client, session_id)
+        if len(episodes) <= 2 or len(episodes) < min_message_count:
+            stats["reason"] = f"insufficient-episodes:{len(episodes)}"
+            return stats
+
+        summary = session.summary
+        if not summary:
+            summary = await _run_with_retries(
+                lambda: summarize_session_with_llm(
+                    episodes,
+                    http_client=http_client,
+                    api_key=llm_api_key,
+                    base_url=llm_base_url,
+                    model=llm_model or DEFAULT_SUMMARY_MODEL,
+                ),
+                label=f"summary generation ({session_id})",
+            )
+            summary_embedding = await _run_with_retries(
+                lambda: client.embedding.embed_text(summary),
+                label=f"summary embedding ({session_id})",
+            )
+            await _run_with_retries(
+                lambda: client.transport.update_session(
+                    session_id,
+                    {
+                        "summary": summary,
+                        "summary_embedding": summary_embedding,
+                    },
+                ),
+                label=f"summary write ({session_id})",
+            )
+            stats["summary_generated"] = True
+        else:
+            stats["summary_skipped"] = True
+
+        stored = await extract_and_store_facts(client.transport, episodes, now=reference_time)
+        stats["session_processed"] = True
+        stats["facts_extracted"] = len(stored)
+        return stats
+    except Exception as exc:  # pragma: no cover - exercised in tests
+        stats["errors"] = 1
+        stats["error"] = str(exc)
+        _log(f"Failed to consolidate session {session_id}: {exc}")
+        return stats
+
+
 async def consolidate_recent_sessions(
     client: MemoryClient,
     *,
@@ -3049,14 +3180,22 @@ async def consolidate_recent_sessions(
     llm_base_url: str | None = None,
     llm_model: str | None = None,
     agent_namespace: str | None = None,
+    batch_limit: int | None = None,
+    cursor_started_after: datetime | str | None = None,
 ) -> dict[str, Any]:
     reference_time = now or _utcnow()
     since = reference_time - timedelta(hours=lookback_hours)
+    parsed_cursor = _coerce_optional_datetime(cursor_started_after)
     stats: dict[str, Any] = {
         "sessions_processed": 0,
         "facts_extracted": 0,
         "errors": 0,
         "error_details": [],
+        "backlog_total_unsummarized": 0,
+        "backlog_attempted": 0,
+        "backlog_remaining": 0,
+        "backlog_cursor_after": parsed_cursor.isoformat() if parsed_cursor else None,
+        "backlog_cursor_wrapped": False,
     }
 
     sessions = await _list_recent_unsummarized_sessions(
@@ -3065,41 +3204,42 @@ async def consolidate_recent_sessions(
         min_message_count=min_message_count,
         agent_namespace=agent_namespace,
     )
-    for session in sessions:
+    stats["backlog_total_unsummarized"] = len(sessions)
+
+    ordered_sessions = list(sessions)
+    if parsed_cursor is not None and ordered_sessions:
+        newer = [session for session in ordered_sessions if session.started_at > parsed_cursor]
+        older = [session for session in ordered_sessions if session.started_at <= parsed_cursor]
+        ordered_sessions = newer + older
+        stats["backlog_cursor_wrapped"] = bool(older and not newer)
+
+    limited_sessions = ordered_sessions
+    if batch_limit is not None and batch_limit > 0:
+        limited_sessions = ordered_sessions[:batch_limit]
+
+    stats["backlog_attempted"] = len(limited_sessions)
+    stats["backlog_remaining"] = max(0, len(ordered_sessions) - len(limited_sessions))
+
+    for session in limited_sessions:
         session_id = str(session.id)
-        try:
-            episodes = await _list_session_episodes(client, session_id)
-            if len(episodes) <= 2:
-                _log(f"Skipping trivial session {session_id}: only {len(episodes)} episodes.")
-                continue
-
-            summary = await summarize_session_with_llm(
-                episodes,
-                http_client=http_client,
-                api_key=llm_api_key,
-                base_url=llm_base_url,
-                model=llm_model or DEFAULT_SUMMARY_MODEL,
-            )
-            summary_embedding = await client.embedding.embed_text(summary)
-            await client.transport.update_session(
-                session_id,
-                {
-                    "summary": summary,
-                    "summary_embedding": summary_embedding,
-                },
-            )
-
-            stored = await extract_and_store_facts(client.transport, episodes, now=reference_time)
+        result = await consolidate_session_if_needed(
+            client,
+            session_id,
+            min_message_count=min_message_count,
+            now=reference_time,
+            http_client=http_client,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model,
+            agent_namespace=agent_namespace,
+        )
+        if result.get("session_processed"):
             stats["sessions_processed"] += 1
-            stats["facts_extracted"] += len(stored)
-            _log(
-                f"Consolidated session {session_id}: summary_len={len(summary)} "
-                f"facts={len(stored)}"
-            )
-        except Exception as exc:  # pragma: no cover - exercised in tests
-            stats["errors"] += 1
-            stats["error_details"].append({"session_id": session_id, "error": str(exc)})
-            _log(f"Failed to consolidate session {session_id}: {exc}")
+            stats["facts_extracted"] += int(result.get("facts_extracted") or 0)
+        if result.get("errors"):
+            stats["errors"] += int(result.get("errors") or 0)
+            stats["error_details"].append({"session_id": session_id, "error": str(result.get("error") or "unknown")})
+        stats["backlog_cursor_after"] = session.started_at.isoformat()
 
     return stats
 

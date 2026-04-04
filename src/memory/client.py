@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from memory.embedding import EmbeddingProvider
@@ -64,6 +65,11 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _warm_curator_event_key(session: Session, message_count: int) -> str:
+    ended_at = session.ended_at.isoformat() if session.ended_at else ""
+    return f"{session.id}:{message_count}:{ended_at}"
 
 
 def _normalize_batch_message(message: dict[str, Any], default_platform: str) -> dict[str, Any] | None:
@@ -875,32 +881,116 @@ class MemoryClient:
             model_config["atlas_hot_curator_message_count"] = message_count
 
         if should_run_warm:
-            from memory.consolidation import refresh_directives, refresh_timeline_events
+            from memory.consolidation import (
+                consolidate_recent_sessions,
+                consolidate_session_if_needed,
+                refresh_decision_outcomes,
+                refresh_directives,
+                refresh_patterns,
+                refresh_timeline_events,
+            )
 
-            try:
-                directives_result = await refresh_directives(
-                    self,
-                    lookback_days=60,
-                    agent_namespace=agent_namespace,
-                )
-                result["directives"] = directives_result
-            except Exception as exc:
-                logger.warning("Warm live curator failed to refresh directives: %s", exc)
-                result["directives_error"] = str(exc)
-            try:
-                timeline_result = await refresh_timeline_events(
-                    self,
-                    lookback_days=30,
-                    min_message_count=1,
-                    agent_namespace=agent_namespace,
-                )
-                result["timeline_events"] = timeline_result
-            except Exception as exc:
-                logger.warning("Warm live curator failed to refresh timeline_events: %s", exc)
-                result["timeline_events_error"] = str(exc)
-            result["warm_ran"] = True
-            model_config["atlas_warm_curator_at"] = now.isoformat()
-            model_config["atlas_warm_curator_message_count"] = message_count
+            warm_event_key = _warm_curator_event_key(session, message_count)
+            if str(model_config.get("atlas_warm_curator_last_event_key") or "") == warm_event_key:
+                result["warm_skipped"] = "duplicate-event"
+            else:
+                lock_until = _parse_iso_datetime(model_config.get("atlas_warm_curator_lock_until"))
+                if lock_until is not None and lock_until > now:
+                    result["warm_skipped"] = "lock-active"
+                else:
+                    lock_window_seconds = max(30, int(os.getenv("MEMORY_WARM_LOCK_SECONDS", "180") or "180"))
+                    run_token = f"{session_id}:{now.isoformat()}:{message_count}"
+                    model_config["atlas_warm_curator_lock_owner"] = run_token
+                    model_config["atlas_warm_curator_lock_until"] = (now + timedelta(seconds=lock_window_seconds)).isoformat()
+                    await self.transport.update_session(session_id, {"model_config": model_config})
+                    try:
+                        try:
+                            consolidation_result = await consolidate_session_if_needed(
+                                self,
+                                session_id,
+                                min_message_count=3,
+                                agent_namespace=agent_namespace,
+                            )
+                            result["session_consolidation"] = consolidation_result
+                        except Exception as exc:
+                            logger.warning("Warm live curator failed to consolidate current session: %s", exc)
+                            result["session_consolidation_error"] = str(exc)
+
+                        try:
+                            backlog_batch_limit = max(1, int(os.getenv("MEMORY_WARM_BACKLOG_BATCH_LIMIT", "8") or "8"))
+                            backlog_cursor = _parse_iso_datetime(model_config.get("atlas_warm_backlog_cursor_started_at"))
+                            backlog_consolidation = await consolidate_recent_sessions(
+                                self,
+                                lookback_hours=24 * 3650,
+                                min_message_count=3,
+                                agent_namespace=agent_namespace,
+                                batch_limit=backlog_batch_limit,
+                                cursor_started_after=backlog_cursor,
+                            )
+                            result["backlog_consolidation"] = backlog_consolidation
+                            model_config["atlas_warm_backlog_batch_limit"] = backlog_batch_limit
+                            model_config["atlas_warm_backlog_last_run_at"] = now.isoformat()
+                            if int(backlog_consolidation.get("backlog_total_unsummarized") or 0) == 0:
+                                model_config.pop("atlas_warm_backlog_cursor_started_at", None)
+                            elif backlog_consolidation.get("backlog_cursor_after"):
+                                model_config["atlas_warm_backlog_cursor_started_at"] = str(backlog_consolidation.get("backlog_cursor_after"))
+                        except Exception as exc:
+                            logger.warning("Warm live curator failed backlog consolidation: %s", exc)
+                            result["backlog_consolidation_error"] = str(exc)
+
+                        try:
+                            directives_result = await refresh_directives(
+                                self,
+                                lookback_days=60,
+                                agent_namespace=agent_namespace,
+                            )
+                            result["directives"] = directives_result
+                        except Exception as exc:
+                            logger.warning("Warm live curator failed to refresh directives: %s", exc)
+                            result["directives_error"] = str(exc)
+                        try:
+                            timeline_result = await refresh_timeline_events(
+                                self,
+                                lookback_days=30,
+                                min_message_count=1,
+                                agent_namespace=agent_namespace,
+                            )
+                            result["timeline_events"] = timeline_result
+                        except Exception as exc:
+                            logger.warning("Warm live curator failed to refresh timeline_events: %s", exc)
+                            result["timeline_events_error"] = str(exc)
+                        try:
+                            decision_outcomes_result = await refresh_decision_outcomes(
+                                self,
+                                lookback_days=3650,
+                                min_message_count=3,
+                                agent_namespace=agent_namespace,
+                            )
+                            result["decision_outcomes"] = decision_outcomes_result
+                        except Exception as exc:
+                            logger.warning("Warm live curator failed to refresh decision_outcomes: %s", exc)
+                            result["decision_outcomes_error"] = str(exc)
+                        try:
+                            patterns_result = await refresh_patterns(
+                                self,
+                                lookback_days=3650,
+                                min_message_count=3,
+                                agent_namespace=agent_namespace,
+                            )
+                            result["patterns"] = patterns_result
+                        except Exception as exc:
+                            logger.warning("Warm live curator failed to refresh patterns: %s", exc)
+                            result["patterns_error"] = str(exc)
+
+                        result["warm_ran"] = True
+                        model_config["atlas_warm_curator_at"] = now.isoformat()
+                        model_config["atlas_warm_curator_message_count"] = message_count
+                        model_config["atlas_warm_curator_last_event_key"] = warm_event_key
+                        model_config["atlas_warm_curator_last_completed_at"] = _utcnow().isoformat()
+                    finally:
+                        if str(model_config.get("atlas_warm_curator_lock_owner") or "") == run_token:
+                            model_config.pop("atlas_warm_curator_lock_owner", None)
+                            model_config.pop("atlas_warm_curator_lock_until", None)
 
         handoff = await self.refresh_session_handoff(
             session_id,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import httpx
@@ -66,7 +66,10 @@ class InMemoryTransport:
 
     async def update_session(self, session_id: str, updates: dict) -> Session:
         session = self.sessions[session_id]
-        updated = session.model_copy(update=updates)
+        normalized_updates = dict(updates)
+        if "model_config" in normalized_updates and "session_model_config" not in normalized_updates:
+            normalized_updates["session_model_config"] = normalized_updates.pop("model_config")
+        updated = session.model_copy(update=normalized_updates)
         self.sessions[session_id] = updated
         return updated
 
@@ -629,12 +632,40 @@ async def test_warm_live_curator_refreshes_timeline_events(monkeypatch: pytest.M
     from memory import consolidation
 
     calls = {
+        "session_consolidation": 0,
+        "backlog_consolidation": 0,
         "active_state": 0,
         "commitments": 0,
         "corrections": 0,
         "directives": 0,
         "timeline_events": 0,
+        "decision_outcomes": 0,
+        "patterns": 0,
     }
+    backlog_kwargs: dict[str, object] = {}
+
+    async def fake_consolidate_session_if_needed(*args, **kwargs):
+        calls["session_consolidation"] += 1
+        return {
+            "session_id": str(session.id),
+            "session_processed": True,
+            "summary_generated": False,
+            "summary_skipped": True,
+            "facts_extracted": 2,
+            "errors": 0,
+            "error": None,
+            "reason": None,
+        }
+
+    async def fake_consolidate_recent_sessions(*args, **kwargs):
+        calls["backlog_consolidation"] += 1
+        backlog_kwargs.update(kwargs)
+        return {
+            "sessions_processed": 2,
+            "facts_extracted": 4,
+            "errors": 0,
+            "error_details": [],
+        }
 
     async def fake_refresh_active_state(*args, **kwargs):
         calls["active_state"] += 1
@@ -656,11 +687,23 @@ async def test_warm_live_curator_refreshes_timeline_events(monkeypatch: pytest.M
         calls["timeline_events"] += 1
         return {"timeline_events_upserted": 1, "timeline_event_count": 1}
 
+    async def fake_refresh_decision_outcomes(*args, **kwargs):
+        calls["decision_outcomes"] += 1
+        return {"decision_outcomes_upserted": 1, "decision_outcome_count": 1}
+
+    async def fake_refresh_patterns(*args, **kwargs):
+        calls["patterns"] += 1
+        return {"patterns_upserted": 1, "pattern_count": 1}
+
+    monkeypatch.setattr(consolidation, "consolidate_session_if_needed", fake_consolidate_session_if_needed)
+    monkeypatch.setattr(consolidation, "consolidate_recent_sessions", fake_consolidate_recent_sessions)
     monkeypatch.setattr(consolidation, "refresh_active_state", fake_refresh_active_state)
     monkeypatch.setattr(consolidation, "refresh_commitments", fake_refresh_commitments)
     monkeypatch.setattr(consolidation, "refresh_corrections", fake_refresh_corrections)
     monkeypatch.setattr(consolidation, "refresh_directives", fake_refresh_directives)
     monkeypatch.setattr(consolidation, "refresh_timeline_events", fake_refresh_timeline_events)
+    monkeypatch.setattr(consolidation, "refresh_decision_outcomes", fake_refresh_decision_outcomes)
+    monkeypatch.setattr(consolidation, "refresh_patterns", fake_refresh_patterns)
 
     result = await client.curate_live_continuity(
         str(session.id),
@@ -671,9 +714,261 @@ async def test_warm_live_curator_refreshes_timeline_events(monkeypatch: pytest.M
 
     assert result["hot_ran"] is True
     assert result["warm_ran"] is True
+    assert "session_consolidation" in result
+    assert "backlog_consolidation" in result
     assert "timeline_events" in result
+    assert "decision_outcomes" in result
+    assert "patterns" in result
+    assert calls["session_consolidation"] == 1
+    assert calls["backlog_consolidation"] == 1
+    assert backlog_kwargs["lookback_hours"] == 24 * 3650
+    assert backlog_kwargs["min_message_count"] == 3
+    assert backlog_kwargs["agent_namespace"] == "main"
+    assert backlog_kwargs["batch_limit"] == 8
+    assert backlog_kwargs["cursor_started_after"] is None
     assert calls["active_state"] == 1
     assert calls["commitments"] == 1
     assert calls["corrections"] == 1
     assert calls["directives"] == 1
     assert calls["timeline_events"] == 1
+    assert calls["decision_outcomes"] == 1
+    assert calls["patterns"] == 1
+
+
+@pytest.mark.asyncio
+async def test_warm_live_curator_retries_backlog_when_current_consolidation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="signal", agent_namespace="main")
+    await transport.update_session(
+        str(session.id),
+        {
+            "message_count": 6,
+        },
+    )
+
+    from memory import consolidation
+
+    calls = {
+        "session_consolidation": 0,
+        "backlog_consolidation": 0,
+    }
+
+    async def fake_consolidate_session_if_needed(*args, **kwargs):
+        calls["session_consolidation"] += 1
+        return {
+            "session_id": str(session.id),
+            "session_processed": False,
+            "summary_generated": False,
+            "summary_skipped": False,
+            "facts_extracted": 0,
+            "errors": 1,
+            "error": "llm unavailable",
+            "reason": None,
+        }
+
+    async def fake_consolidate_recent_sessions(*args, **kwargs):
+        calls["backlog_consolidation"] += 1
+        return {
+            "sessions_processed": 3,
+            "facts_extracted": 7,
+            "errors": 0,
+            "error_details": [],
+        }
+
+    async def fake_refresh_active_state(*args, **kwargs):
+        return {"states_upserted": 1, "states_staled": 0, "state_keys": ["auto:open_loop:primary"]}
+
+    async def fake_refresh_commitments(*args, **kwargs):
+        return {"commitments_upserted": 1, "commitment_count": 1}
+
+    async def fake_refresh_corrections(*args, **kwargs):
+        return {"corrections_upserted": 0, "correction_count": 0}
+
+    async def fake_refresh_directives(*args, **kwargs):
+        return {"directives_upserted": 1, "directive_count": 1}
+
+    async def fake_refresh_timeline_events(*args, **kwargs):
+        return {"timeline_events_upserted": 1, "timeline_event_count": 1}
+
+    async def fake_refresh_decision_outcomes(*args, **kwargs):
+        return {"decision_outcomes_upserted": 1, "decision_outcome_count": 1}
+
+    async def fake_refresh_patterns(*args, **kwargs):
+        return {"patterns_upserted": 1, "pattern_count": 1}
+
+    monkeypatch.setattr(consolidation, "consolidate_session_if_needed", fake_consolidate_session_if_needed)
+    monkeypatch.setattr(consolidation, "consolidate_recent_sessions", fake_consolidate_recent_sessions)
+    monkeypatch.setattr(consolidation, "refresh_active_state", fake_refresh_active_state)
+    monkeypatch.setattr(consolidation, "refresh_commitments", fake_refresh_commitments)
+    monkeypatch.setattr(consolidation, "refresh_corrections", fake_refresh_corrections)
+    monkeypatch.setattr(consolidation, "refresh_directives", fake_refresh_directives)
+    monkeypatch.setattr(consolidation, "refresh_timeline_events", fake_refresh_timeline_events)
+    monkeypatch.setattr(consolidation, "refresh_decision_outcomes", fake_refresh_decision_outcomes)
+    monkeypatch.setattr(consolidation, "refresh_patterns", fake_refresh_patterns)
+
+    result = await client.curate_live_continuity(
+        str(session.id),
+        agent_namespace="main",
+        mode="warm",
+        force=True,
+    )
+
+    assert calls["session_consolidation"] == 1
+    assert calls["backlog_consolidation"] == 1
+    assert result["session_consolidation"]["errors"] == 1
+    assert result["backlog_consolidation"]["sessions_processed"] == 3
+
+
+@pytest.mark.asyncio
+async def test_warm_live_curator_skips_duplicate_event_with_idempotency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="signal", agent_namespace="main")
+    ended_at = datetime.now(timezone.utc)
+    message_count = 7
+    duplicate_event_key = f"{session.id}:{message_count}:{ended_at.isoformat()}"
+    await transport.update_session(
+        str(session.id),
+        {
+            "ended_at": ended_at,
+            "message_count": message_count,
+            "model_config": {"atlas_warm_curator_last_event_key": duplicate_event_key},
+        },
+    )
+
+    from memory import consolidation
+
+    calls = {"session_consolidation": 0, "backlog_consolidation": 0}
+
+    async def fake_consolidate_session_if_needed(*args, **kwargs):
+        calls["session_consolidation"] += 1
+        return {"session_processed": True, "facts_extracted": 1, "errors": 0}
+
+    async def fake_consolidate_recent_sessions(*args, **kwargs):
+        calls["backlog_consolidation"] += 1
+        return {
+            "sessions_processed": 1,
+            "facts_extracted": 1,
+            "errors": 0,
+            "error_details": [],
+            "backlog_total_unsummarized": 1,
+            "backlog_attempted": 1,
+            "backlog_remaining": 0,
+            "backlog_cursor_after": ended_at.isoformat(),
+            "backlog_cursor_wrapped": False,
+        }
+
+    async def fake_refresh_active_state(*args, **kwargs):
+        return {"states_upserted": 1, "states_staled": 0, "state_keys": ["auto:open_loop:primary"]}
+
+    async def fake_refresh_commitments(*args, **kwargs):
+        return {"commitments_upserted": 1, "commitment_count": 1}
+
+    async def fake_refresh_corrections(*args, **kwargs):
+        return {"corrections_upserted": 0, "correction_count": 0}
+
+    monkeypatch.setattr(consolidation, "consolidate_session_if_needed", fake_consolidate_session_if_needed)
+    monkeypatch.setattr(consolidation, "consolidate_recent_sessions", fake_consolidate_recent_sessions)
+    monkeypatch.setattr(consolidation, "refresh_active_state", fake_refresh_active_state)
+    monkeypatch.setattr(consolidation, "refresh_commitments", fake_refresh_commitments)
+    monkeypatch.setattr(consolidation, "refresh_corrections", fake_refresh_corrections)
+
+    result = await client.curate_live_continuity(
+        str(session.id),
+        agent_namespace="main",
+        mode="warm",
+        force=True,
+    )
+
+    assert result["warm_ran"] is False
+    assert result["warm_skipped"] == "duplicate-event"
+    assert calls["session_consolidation"] == 0
+    assert calls["backlog_consolidation"] == 0
+
+
+@pytest.mark.asyncio
+async def test_warm_live_curator_uses_backlog_cursor_and_updates_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="signal", agent_namespace="main")
+    initial_cursor = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    await transport.update_session(
+        str(session.id),
+        {
+            "message_count": 6,
+            "model_config": {"atlas_warm_backlog_cursor_started_at": initial_cursor},
+        },
+    )
+
+    from memory import consolidation
+
+    captured_kwargs: dict[str, object] = {}
+    next_cursor = datetime.now(timezone.utc).isoformat()
+
+    async def fake_consolidate_session_if_needed(*args, **kwargs):
+        return {"session_processed": True, "facts_extracted": 1, "errors": 0}
+
+    async def fake_consolidate_recent_sessions(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "sessions_processed": 2,
+            "facts_extracted": 4,
+            "errors": 0,
+            "error_details": [],
+            "backlog_total_unsummarized": 5,
+            "backlog_attempted": 2,
+            "backlog_remaining": 3,
+            "backlog_cursor_after": next_cursor,
+            "backlog_cursor_wrapped": False,
+        }
+
+    async def fake_refresh_active_state(*args, **kwargs):
+        return {"states_upserted": 1, "states_staled": 0, "state_keys": ["auto:open_loop:primary"]}
+
+    async def fake_refresh_commitments(*args, **kwargs):
+        return {"commitments_upserted": 1, "commitment_count": 1}
+
+    async def fake_refresh_corrections(*args, **kwargs):
+        return {"corrections_upserted": 0, "correction_count": 0}
+
+    async def fake_refresh_directives(*args, **kwargs):
+        return {"directives_upserted": 1, "directive_count": 1}
+
+    async def fake_refresh_timeline_events(*args, **kwargs):
+        return {"timeline_events_upserted": 1, "timeline_event_count": 1}
+
+    async def fake_refresh_decision_outcomes(*args, **kwargs):
+        return {"decision_outcomes_upserted": 1, "decision_outcome_count": 1}
+
+    async def fake_refresh_patterns(*args, **kwargs):
+        return {"patterns_upserted": 1, "pattern_count": 1}
+
+    monkeypatch.setattr(consolidation, "consolidate_session_if_needed", fake_consolidate_session_if_needed)
+    monkeypatch.setattr(consolidation, "consolidate_recent_sessions", fake_consolidate_recent_sessions)
+    monkeypatch.setattr(consolidation, "refresh_active_state", fake_refresh_active_state)
+    monkeypatch.setattr(consolidation, "refresh_commitments", fake_refresh_commitments)
+    monkeypatch.setattr(consolidation, "refresh_corrections", fake_refresh_corrections)
+    monkeypatch.setattr(consolidation, "refresh_directives", fake_refresh_directives)
+    monkeypatch.setattr(consolidation, "refresh_timeline_events", fake_refresh_timeline_events)
+    monkeypatch.setattr(consolidation, "refresh_decision_outcomes", fake_refresh_decision_outcomes)
+    monkeypatch.setattr(consolidation, "refresh_patterns", fake_refresh_patterns)
+
+    await client.curate_live_continuity(
+        str(session.id),
+        agent_namespace="main",
+        mode="warm",
+        force=True,
+    )
+
+    assert isinstance(captured_kwargs.get("cursor_started_after"), datetime)
+    assert captured_kwargs.get("batch_limit") == 8
+    updated_session = await transport.get_session(str(session.id))
+    assert updated_session is not None
+    assert updated_session.session_model_config.get("atlas_warm_backlog_cursor_started_at") == next_cursor
