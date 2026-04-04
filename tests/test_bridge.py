@@ -9,7 +9,7 @@ from memory.bridge import MemoryBridge
 from memory.client import MemoryClient
 from memory.embedding import MockEmbeddingProvider
 from memory.emotions import EmotionAnalyzer
-from memory.models import Commitment, Correction, DecisionOutcome, Directive, Episode, Fact, FactHistory, Pattern, Session, SessionHandoff, TimelineEvent
+from memory.models import Commitment, Correction, DecisionOutcome, Directive, Episode, Fact, FactHistory, Pattern, Reflection, Session, SessionHandoff, TimelineEvent
 
 
 class MockTransport:
@@ -25,6 +25,7 @@ class MockTransport:
         self.timeline_events: list[TimelineEvent] = []
         self.decision_outcomes: list[DecisionOutcome] = []
         self.patterns: list[Pattern] = []
+        self.reflections: list[Reflection] = []
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
         self.session_handoffs: list[SessionHandoff] = []
@@ -227,6 +228,25 @@ class MockTransport:
         _ = (agent_namespace, pattern_types)
         patterns = sorted(self.patterns, key=lambda pattern: (pattern.impact_score, pattern.last_observed_at), reverse=True)
         return patterns[:limit]
+
+    async def upsert_reflection(self, reflection: Reflection):
+        self._maybe_fail("upsert_reflection")
+        self.reflections = [existing for existing in self.reflections if existing.reflection_key != reflection.reflection_key]
+        self.reflections.append(reflection)
+        return reflection
+
+    async def list_reflections(self, limit: int = 10, agent_namespace: str | None = None, statuses: list[str] | None = None):
+        self._maybe_fail("list_reflections")
+        _ = (agent_namespace, statuses)
+        reflections = sorted(self.reflections, key=lambda reflection: (reflection.confidence, reflection.last_observed_at), reverse=True)
+        return reflections[:limit]
+
+    async def delete_reflection(self, reflection_key: str, *, agent_namespace: str | None = None):
+        self._maybe_fail("delete_reflection")
+        _ = agent_namespace
+        before = len(self.reflections)
+        self.reflections = [existing for existing in self.reflections if existing.reflection_key != reflection_key]
+        return len(self.reflections) < before
 
     async def upsert_commitment(self, commitment: Commitment):
         self._maybe_fail("upsert_commitment")

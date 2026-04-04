@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Sequence
 
-from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, Pattern, Session, SessionHandoff, TimelineEvent
+from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, Pattern, Reflection, ReflectionStatus, Session, SessionHandoff, TimelineEvent
 from memory.transport import (
     MemoryTransport,
     _looks_like_operational_content,
@@ -20,6 +20,7 @@ MAX_RECENT_EPISODES = 3
 MAX_HANDOFF_EPISODES = 12
 MAX_DECISION_OUTCOMES_IN_CONTEXT = 4
 MAX_PATTERNS_IN_CONTEXT = 4
+MAX_REFLECTIONS_IN_CONTEXT = 3
 MAX_COMMITMENTS_IN_CONTEXT = 4
 MAX_TIMELINE_EVENTS_IN_CONTEXT = 4
 FACT_SEARCH_LIMIT = 100
@@ -62,31 +63,29 @@ _STOPWORDS = {
 }
 _GENERIC_PROJECT_MEMORY_TOKENS = {
     "actually",
-    "can",
     "approach",
-    "build",
-    "just",
     "build",
     "current",
     "focus",
     "goal",
     "goals",
     "make",
-    "memory",
     "need",
     "next",
     "priority",
     "problem",
     "project",
     "projects",
-    "remember",
     "state",
     "should",
     "system",
-    "user",
-    "wants",
     "work",
     "working",
+    "update",
+    "task",
+    "tasks",
+    "issue",
+    "issues",
 }
 _LOW_SIGNAL_MESSAGES = {
     "hey",
@@ -231,6 +230,24 @@ def _query_targets_patterns(value: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def _query_targets_reflections(value: str) -> bool:
+    lowered = (value or "").lower()
+    markers = (
+        "biggest fear",
+        "blind spot",
+        "motivation",
+        "what drives",
+        "what value",
+        "why do i keep",
+        "why do we keep",
+        "personality",
+        "who am i",
+        "what do you infer",
+        "what do you think about me",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 def _query_targets_memory_context(value: str) -> bool:
     lowered = (value or "").lower()
     markers = (
@@ -307,16 +324,18 @@ def _query_targets_delivery_memory(value: str) -> bool:
 def _query_targets_project_context(value: str) -> bool:
     lowered = (value or "").lower()
     markers = (
-        "memory project",
-        "supabase",
-        "gateway",
-        "schema",
+        "project",
+        "roadmap",
+        "milestone",
         "migration",
-        "directive",
-        "active state",
+        "schema",
+        "architecture",
         "retrieval",
-        "context injection",
+        "ranking",
+        "pipeline",
+        "deployment",
         "session",
+        "implementation",
     )
     return any(marker in lowered for marker in markers)
 
@@ -326,28 +345,25 @@ def _looks_like_project_build_memory(text: str, tags: Sequence[str] | None = Non
     tag_text = " ".join(tags or []).lower()
     combined = f"{lowered} {tag_text}".strip()
     markers = (
-        "memory",
-        "supabase",
-        "gateway",
+        "database",
+        "backend",
+        "api",
         "migration",
         "schema",
-        "directive",
-        "active state",
-        "context injection",
-        "pre_llm_call",
-        "build roadmap",
-        "memory project status",
-        "git root",
-        "reply-to-message",
-        "reply to message",
+        "refactor",
         "roadmap",
         "pipeline",
-        "mcp",
-        "e2e",
-        "curator",
-        "gw restart",
-        "file operations",
-        "subagent",
+        "retrieval",
+        "ranking",
+        "test suite",
+        "integration test",
+        "rollout",
+        "deployment",
+        "runtime",
+        "session",
+        "feature",
+        "memory layer",
+        "purpose",
     )
     return any(marker in combined for marker in markers)
 
@@ -364,8 +380,11 @@ def _project_build_overlap(text: str, tags: Sequence[str] | None, query_tokens: 
 def _clean_fact_content(fact: Fact) -> str:
     text = _normalize_text(fact.content, max_length=260)
     lowered = text.lower()
-    if lowered.startswith("ishaan profile for "):
-        profile_blob = text.split(":", 1)[1].strip() if ":" in text else text
+    if " profile for " in lowered:
+        split_index = lowered.find(" profile for ")
+        prefix = text[:split_index].strip()
+        profile_blob = text.split(":", 1)[1].strip() if ":" in text else text[split_index + len(" profile for ") :].strip()
+        label = f"{prefix.title()} profile" if prefix else "User profile"
         preferred_bits: list[str] = []
         fallback_bits: list[str] = []
         for sentence in _summary_sentences(profile_blob):
@@ -373,14 +392,15 @@ def _clean_fact_content(fact: Fact) -> str:
             if any(
                 marker in lowered_sentence
                 for marker in (
-                    "mumbai",
-                    "b.tech",
-                    "computer engineering",
-                    "solo founder",
-                    "upstorr.com",
-                    "macbook",
-                    "college ends",
-                    "works 15-hour days",
+                    "current role",
+                    "works on",
+                    "building",
+                    "founder",
+                    "company",
+                    "role",
+                    "focus",
+                    "prefers",
+                    "values",
                 )
             ):
                 preferred_bits.append(sentence.rstrip("."))
@@ -388,7 +408,7 @@ def _clean_fact_content(fact: Fact) -> str:
                 fallback_bits.append(sentence.rstrip("."))
         bits = preferred_bits[:5] or fallback_bits[:3]
         if bits:
-            return _normalize_text("Ishaan profile: " + "; ".join(bits), max_length=220)
+            return _normalize_text(label + ": " + "; ".join(bits), max_length=220)
     return text
 
 
@@ -541,24 +561,12 @@ def _looks_like_low_quality_fact(fact: Fact) -> bool:
         return True
     if _looks_like_operational_content(fact.content):
         return True
+    if any(marker in lowered for marker in ("tests pass", "build complete", "skipped", "stack trace", "traceback")):
+        return True
+    if any(marker in lowered for marker in ("api key", "service key", "env var", "config file", "jsonl")):
+        return True
     if "backfill" in fact.tags and not fact.source_episode_ids:
-        if len(fact.content) > 320:
-            return True
-        if any(
-            marker in lowered
-            for marker in (
-                "build complete",
-                "tests pass",
-                "skipped",
-                "supabase_service_key",
-                "config was corrected",
-                "operating standard",
-                "reply-threading",
-                "telegraph_reply_to_mode",
-                "text_to_speech",
-                "whisper model",
-            )
-        ):
+        if len(fact.content) > 260:
             return True
     if fact.category is FactCategory.GOAL and lowered.startswith("user wants to "):
         if any(
@@ -570,44 +578,12 @@ def _looks_like_low_quality_fact(fact: Fact) -> bool:
                 "figure out ",
                 "restart ",
                 "reply",
-                "bubble",
-                "gateway",
-                "supabase",
                 "schema",
                 "migration",
-                "delegate this to codex",
-                "save this session",
-                "return json objects",
-                "know becuase",
-            )
-        ):
-            return True
-    if fact.category is FactCategory.FACT and lowered.startswith("user wants "):
-        if any(
-            marker in lowered
-            for marker in (
-                "telegram dm",
-                "home destination",
-                "voice replies",
-                "text and voice replies",
-                "deliver='origin'",
-            )
-        ):
-            return True
-    if fact.category is FactCategory.FACT:
-        if any(
-            marker in lowered
-            for marker in (
-                "no emojis in skills",
-                "notify new skills only",
-                "cron: skip delivery on no-op",
-                "memory purpose",
-                "memory vision",
-                "memory build roadmap",
-                "memory project status",
-                "locally they live under one git root",
-                "always test gw restart before pushing",
-                "memory rebrand in progress",
+                "env file",
+                "run tests",
+                "apply patch",
+                "json",
             )
         ):
             return True
@@ -615,20 +591,24 @@ def _looks_like_low_quality_fact(fact: Fact) -> bool:
         len(_tokenize(fact.content)) > 12 or re.search(r"\b(?:you|your|u)\b", lowered)
     ):
         return True
-    if fact.category is FactCategory.PREFERENCE and "remember that" in lowered:
-        return True
-    if fact.category is FactCategory.PREFERENCE and "need to be perfect" in lowered:
+    if fact.category is FactCategory.PREFERENCE and any(
+        marker in lowered
+        for marker in (
+            "remember that",
+            "remember this",
+        )
+    ):
         return True
     if fact.category is FactCategory.PROJECT and not fact.source_episode_ids:
-        if any(marker in lowered for marker in ("let me ", "what's next", "what is left", "table was missing")):
+        if any(marker in lowered for marker in ("let me ", "what's next", "what is left", "table was missing", "phase 1", "phase 2")):
             return True
     if fact.category is FactCategory.PROJECT:
         if lowered.startswith(
             (
                 "i should ",
                 "let me ",
-                "but the gateway was restarted",
-                "overight build complete",
+                "but the service was restarted",
+                "overnight build complete",
                 "wait,",
                 "this is likely",
                 "- [project]",
@@ -644,22 +624,10 @@ def _looks_like_low_quality_fact(fact: Fact) -> bool:
                 "phase 2:",
                 "phase 3:",
                 "tests pass",
-                "memorybridge",
-                "always_on_spec",
-                "gateway was restarted",
-                "subtree migration",
                 "not been applied",
-                "every atomic fact about you",
-                "env file for the memory project",
-                "postgrest notify reload",
+                "env file",
                 "code patches",
-                "bigger project",
                 "important discussion",
-                "2342 messages",
-                "mcp knows which project to target",
-                "patch file rule",
-                "same upstorr project",
-                "lmao are u crazy",
             )
         ):
             return True
@@ -668,10 +636,9 @@ def _looks_like_low_quality_fact(fact: Fact) -> bool:
             marker in lowered
             for marker in (
                 "delegate the file operations",
-                "e2e tests and curator can actually talk to the db",
-                "patch file rule",
-                "tts and keep my actual response minimal or empty",
-                "force push since the memory repo on github",
+                "talk to the db",
+                "keep my actual response minimal",
+                "force push",
             )
         ):
             return True
@@ -683,22 +650,14 @@ def _looks_like_low_quality_active_state_line(line: str) -> bool:
     if any(
         marker in lowered
         for marker in (
-            "what is left regarding the memory project",
             "return json objects",
             "this is likely a migration that hasn't been applied",
-            "r u feeling the upgrade",
-            "or u r just lying to me",
             "reply to",
-            "voice transcription working",
-            "paused crons",
-            "gpt 5.4",
-            "openai api key",
-            "memory build roadmap",
-            "memory project status",
-            "pre_llm_call",
+            "api key",
+            "env var",
+            "build roadmap",
+            "project status",
             "git root",
-            "heres the question",
-            "here's the question",
         )
     ):
         return True
@@ -755,6 +714,39 @@ def _pattern_relevance_score(pattern: Pattern, query_tokens: set[str]) -> float:
         + (float(pattern.frequency_score) * 0.3)
         + (float(pattern.confidence) * 0.25)
     )
+
+
+def _reflection_relevance_score(reflection: Reflection, query_tokens: set[str]) -> float:
+    tokens = _tokenize(
+        " ".join(
+            [
+                reflection.kind.value,
+                reflection.statement,
+                reflection.evidence_summary or "",
+                " ".join(reflection.tags),
+            ]
+        )
+    )
+    status_bonus = 0.3 if reflection.status == ReflectionStatus.SUPPORTED else 0.0
+    return (
+        (_token_overlap_count(query_tokens, tokens) * 4.0)
+        + (float(reflection.confidence) * 0.5)
+        + status_bonus
+    )
+
+
+def _reflection_overlap(reflection: Reflection, query_tokens: set[str]) -> int:
+    combined_tokens = _tokenize(
+        " ".join(
+            [
+                reflection.kind.value,
+                reflection.statement,
+                reflection.evidence_summary or "",
+                " ".join(reflection.tags),
+            ]
+        )
+    )
+    return _token_overlap_count(query_tokens, combined_tokens)
 
 
 def _looks_like_trivial_episode(content: str) -> bool:
@@ -816,6 +808,7 @@ class EnrichmentPayload:
     timeline_events: list[TimelineEvent]
     decision_outcomes: list[DecisionOutcome]
     patterns: list[Pattern]
+    reflections: list[Reflection]
     active_state_lines: list[str]
     continuity_handoff_lines: list[str]
     relevant_episodes: list[Episode]
@@ -838,6 +831,7 @@ class EnrichmentPayload:
             _format_timeline_events(self.timeline_events),
             _format_decision_outcomes(self.decision_outcomes),
             _format_patterns(self.patterns),
+            _format_reflections(self.reflections),
             _format_facts(self.facts),
             _format_active_state(self.active_state_lines),
             _format_recent_handoff(self.continuity_handoff_lines, self.recent_episodes),
@@ -928,6 +922,24 @@ def _format_patterns(patterns: list[Pattern]) -> str:
             f"- [{pattern.pattern_type.value}] {_normalize_text(pattern.statement)}{description_suffix}"
         )
     return "Relevant patterns:\n" + "\n".join(lines)
+
+
+def _format_reflections(reflections: list[Reflection]) -> str:
+    if not reflections:
+        return ""
+
+    lines = []
+    for reflection in reflections:
+        status = reflection.status.value
+        evidence_suffix = (
+            f" Evidence: {_normalize_text(reflection.evidence_summary)}"
+            if reflection.evidence_summary
+            else ""
+        )
+        lines.append(
+            f"- [{status}/{reflection.kind.value}] {_normalize_text(reflection.statement)}{evidence_suffix}"
+        )
+    return "Tentative reflections (verify with current context):\n" + "\n".join(lines)
 
 
 def _decision_outcome_overlap(outcome: DecisionOutcome, query_tokens: set[str]) -> int:
@@ -1593,6 +1605,11 @@ async def collect_enrichment_payload(
     timeline_task = transport.list_timeline_events(limit=12, agent_namespace=agent_namespace)
     outcomes_task = transport.list_decision_outcomes(limit=24, agent_namespace=agent_namespace)
     patterns_task = transport.list_patterns(limit=24, agent_namespace=agent_namespace)
+    reflections_task = transport.list_reflections(
+        limit=24,
+        agent_namespace=agent_namespace,
+        statuses=[ReflectionStatus.SUPPORTED.value, ReflectionStatus.TENTATIVE.value],
+    )
     active_state_task = transport.list_active_state(limit=5, agent_namespace=agent_namespace, statuses=["active", "cooling"])
     session_handoffs_task = transport.list_session_handoffs(
         limit=3,
@@ -1614,7 +1631,7 @@ async def collect_enrichment_payload(
     )
 
     if session_task is None:
-        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, active_state_records, session_handoffs, relevant_episodes, recent_episodes = await asyncio.gather(
+        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, reflections, active_state_records, session_handoffs, relevant_episodes, recent_episodes = await asyncio.gather(
             facts_task,
             directives_task,
             commitments_task,
@@ -1622,6 +1639,7 @@ async def collect_enrichment_payload(
             timeline_task,
             outcomes_task,
             patterns_task,
+            reflections_task,
             active_state_task,
             session_handoffs_task,
             relevant_episodes_task,
@@ -1629,7 +1647,7 @@ async def collect_enrichment_payload(
         )
         active_session = None
     else:
-        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, active_state_records, session_handoffs, relevant_episodes, recent_episodes, active_session = await asyncio.gather(
+        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, reflections, active_state_records, session_handoffs, relevant_episodes, recent_episodes, active_session = await asyncio.gather(
             facts_task,
             directives_task,
             commitments_task,
@@ -1637,6 +1655,7 @@ async def collect_enrichment_payload(
             timeline_task,
             outcomes_task,
             patterns_task,
+            reflections_task,
             active_state_task,
             session_handoffs_task,
             relevant_episodes_task,
@@ -1652,6 +1671,7 @@ async def collect_enrichment_payload(
     continuity_query = _query_targets_continuity(user_message)
     project_query = _query_targets_project_context(user_message) or memory_query
     patterns_query = _query_targets_patterns(user_message)
+    reflections_query = _query_targets_reflections(user_message)
     timeline_query = _query_targets_timeline(user_message)
     commitments_query = _query_targets_commitments(user_message) or advice_query
     ranked_facts = sorted(
@@ -1859,6 +1879,37 @@ async def collect_enrichment_payload(
             and _pattern_relevance_score(pattern, query_tokens) > 1.0
         ][:MAX_PATTERNS_IN_CONTEXT]
 
+    ranked_reflections = sorted(
+        [
+            reflection
+            for reflection in reflections
+            if not _is_corrected_text(" ".join([reflection.statement, reflection.evidence_summary or ""]), corrections)
+            if not _looks_like_reference_content(reflection.statement)
+            if not _looks_like_operational_content(reflection.statement)
+        ],
+        key=lambda reflection: (
+            _reflection_relevance_score(reflection, query_tokens),
+            _sort_datetime(reflection.last_observed_at),
+        ),
+        reverse=True,
+    )
+    if low_signal_query:
+        filtered_reflections = []
+    elif reflections_query or patterns_query:
+        filtered_reflections = [
+            reflection
+            for reflection in ranked_reflections
+            if _reflection_overlap(reflection, query_tokens) > 0
+            or float(reflection.confidence) >= 0.75
+        ][:MAX_REFLECTIONS_IN_CONTEXT]
+    else:
+        filtered_reflections = [
+            reflection
+            for reflection in ranked_reflections
+            if _reflection_overlap(reflection, query_tokens) > 0
+            and _reflection_relevance_score(reflection, query_tokens) > 1.0
+        ][:MAX_REFLECTIONS_IN_CONTEXT]
+
     if commitments_query:
         filtered_commitments = commitments[:MAX_COMMITMENTS_IN_CONTEXT]
     else:
@@ -1872,6 +1923,7 @@ async def collect_enrichment_payload(
         timeline_events=filtered_timeline_events,
         decision_outcomes=filtered_decision_outcomes,
         patterns=filtered_patterns,
+        reflections=filtered_reflections,
         active_state_lines=(
             _active_state_lines_from_records(
                 active_state_records,

@@ -15,7 +15,7 @@ It answers:
 
 ## Status Snapshot
 
-As of `2026-04-03`, the following layers are implemented in code, migrated in Supabase, and rolled into the live `main` namespace:
+As of `2026-04-04`, the following layers are implemented in code, migrated in Supabase, and rolled into the live `main` namespace:
 
 - `agent_namespace` / instance-safe foundation
 - `active_state`
@@ -25,6 +25,8 @@ As of `2026-04-03`, the following layers are implemented in code, migrated in Su
 - `patterns`
 - `commitments`
 - `corrections`
+- `session_handoffs` (short-range baton continuity)
+- always-on curator runtime (`hot`/`warm` paths active, cron demoted to backstop)
 
 What is already true in live Memory:
 
@@ -41,19 +43,23 @@ What is already true in live Memory:
 - `timeline_events` now include day/week rollups and rank correctly for period-style questions
 - `decision_outcomes` now require stronger grounding and cleaner lessons before they survive
 - `patterns` now use stricter evidence rules and only promote live patterns that still have repeated support
+- automatic session rollover now preserves last-thread continuity via handoff state
+- live append/end hooks now run continuity curation without requiring cron as the primary driver
+- end-of-session deep consolidation runs automatically and retries unsummarized backlog in bounded batches
+- warm curation is hardened with idempotency keys, lock windows, and retry/backoff around summary pipelines
 
 What is still actively left:
 
 - restoring Memory as an additive Hermes memory provider instead of a deep runtime fork
 - a polished `atlas` provider setup flow under `hermes memory setup`
 - genericizing extraction and enrichment so Memory adapts to any user over time, not just current talking style
-- live short-range continuity across automatic session rollover
-- a dedicated recent-conversation handoff / baton layer for the last 15-30 messages
-- replacing cron-shaped background consolidation with an always-on event-driven memory curator
 - `reflections`
 - user-facing forget / revoke / override flows
 - proactive presence / heartbeat behavior
 - optional future multi-profile registry and visibility model
+- observability and SLOs for memory quality/latency/cost (not just unit tests)
+- replay/eval harness and regression gates in CI
+- retirement plan for old unused tables/views after confidence windows
 
 
 ## Strategic Direction
@@ -279,7 +285,8 @@ This order gives the fastest user-visible gain while keeping the hardest inferen
 Current rollout state:
 
 - phases `0` through `6` below are functionally done and live
-- the next architecture milestone is Atlas-as-provider plus live continuity + event-driven curation
+- live continuity and event-driven curation are now implemented in the runtime path
+- the next architecture milestone is Atlas-as-provider and productization hardening
 - `reflections` have not started
 - cleanup / quality work is no longer the only focus; operating-model changes now matter too
 
@@ -693,25 +700,26 @@ Minimum bar:
 
 If continuing from the current state, work in this order:
 
-1. live continuity / handoff layer
-2. always-on event-driven curator
+1. Atlas provider seam + setup UX (`hermes memory setup` quality)
+2. genericization pass across extraction/enrichment and retrieval ranking
 3. `reflections`
 4. user-facing forget / revoke / override flows
-5. proactive presence / heartbeat behavior
-6. optional future multi-profile registry and visibility model
+5. observability + eval harness + regression gates
+6. proactive presence / heartbeat behavior
+7. optional future multi-profile registry and visibility model
 
 Rationale:
 
 - the core memory substrate is now real and live
-- the biggest remaining gap is now short-range continuity, not basic persistence
-- the user should not feel session boundaries, so handoff memory is now a first-class requirement
-- cron-based consolidation is acceptable as a temporary backstop, but not as the final memory operating model
+- the biggest remaining gap is productization and trust operations, not base continuity
+- handoff continuity and event-driven curation are in place and should now be tuned by eval data
+- cron-based consolidation is now a safety backstop, not the primary memory operating model
 - deeper reflective layers should land only after live continuity and curator architecture are solid
 
 
 ## Live Continuity and Curator Architecture
 
-Status: `Not started`
+Status: `Implemented (active), ongoing hardening`
 
 ### Goals
 
@@ -759,9 +767,17 @@ Split background memory work into three paths:
 ### Success criteria
 
 - the user never manually manages session resets
-- Memory can start a fresh session while clearly knowing what was being discussed just before rollover
+- Memory starts a fresh session while clearly knowing what was being discussed just before rollover
 - recent continuity survives even before slower higher-order layers refresh
-- memory curation cost remains bounded because deep synthesis is selective
+- memory curation cost stays bounded because deep synthesis remains selective
+
+### Current implementation notes
+
+- live append and live session-end events call continuity curation directly
+- warm path performs per-session deep consolidation and bounded backlog retry automatically
+- duplicate warm events are skipped via idempotency keys and lock-window checks
+- backlog processing advances with a cursor to avoid unbounded catch-up runs
+- cron remains available only as operational maintenance backstop
 
 
 ## Phase 7: Reflections
@@ -953,15 +969,13 @@ Build replay/eval coverage from the start.
 
 This is the actual highest-value remaining sequence now:
 
-1. live continuity / handoff
-- add a dedicated short-range baton layer for recent cross-session continuity
-- preserve last topic, unresolved thread, next step, and pending assistant promise across rollover
-- make session boundaries invisible to the user
+1. Atlas provider productization
+- expose Atlas cleanly through upstream provider seam
+- finish polished setup docs and setup flow under `hermes memory setup`
 
-2. always-on memory curator
-- replace cron as the primary memory brain
-- move to an event-driven background curator with hot / warm / cold queues
-- keep the cron path only as a maintenance backstop
+2. genericization and retrieval quality
+- remove remaining style-specific extraction assumptions
+- improve ranking so timeline-first and handoff-first routing is consistent
 
 3. `facts` cleanup and grounding
 - remove awkward or weakly supported fact rows
@@ -969,12 +983,19 @@ This is the actual highest-value remaining sequence now:
 
 4. `active_state` synthesis cleanup
 - turn raw lines into sharper current-life summaries
-- shift live active-state refresh onto the curator path
+- tune active-state freshness and phrasing using replay evals
 
 5. `reflections`
 - implement cautiously with evidence and reversibility
 
-6. proactive presence / heartbeat
+6. user controls and trust UX
+- implement forget / revoke / override flows on top of commitments/corrections layers
+
+7. observability and eval harness
+- add latency/cost/quality metrics and alert thresholds
+- add replay suite and CI regression gates
+
+8. proactive presence / heartbeat
 - inactivity awareness
 - open-loop follow-up
 - check-in logic

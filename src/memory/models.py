@@ -153,6 +153,20 @@ class PatternType(str, Enum):
     QUALITY_BAR = "quality_bar"
 
 
+class ReflectionKind(str, Enum):
+    WORKFLOW_HYPOTHESIS = "workflow_hypothesis"
+    VALUE_HYPOTHESIS = "value_hypothesis"
+    BLIND_SPOT = "blind_spot"
+    MOTIVATION_HYPOTHESIS = "motivation_hypothesis"
+    COMMUNICATION_HYPOTHESIS = "communication_hypothesis"
+
+
+class ReflectionStatus(str, Enum):
+    TENTATIVE = "tentative"
+    SUPPORTED = "supported"
+    RETIRED = "retired"
+
+
 class CommitmentKind(str, Enum):
     FOLLOW_UP = "follow_up"
     REMINDER = "reminder"
@@ -448,6 +462,29 @@ class Pattern(MemoryBaseModel):
     @field_validator("supporting_episode_ids", "supporting_session_ids", "counterexample_episode_ids", "tags", mode="before")
     @classmethod
     def _coerce_null_pattern_lists(cls, v: Any) -> Any:
+        return v if v is not None else []
+
+
+class Reflection(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    kind: ReflectionKind = ReflectionKind.WORKFLOW_HYPOTHESIS
+    statement: str
+    evidence_summary: str | None = None
+    reflection_key: str
+    status: ReflectionStatus = ReflectionStatus.TENTATIVE
+    confidence: float = Field(default=0.62, ge=0.0, le=1.0)
+    first_observed_at: AwareDatetime
+    last_observed_at: AwareDatetime
+    supporting_episode_ids: list[UUID] = Field(default_factory=list)
+    supporting_session_ids: list[UUID] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+
+    @field_validator("supporting_episode_ids", "supporting_session_ids", "tags", mode="before")
+    @classmethod
+    def _coerce_null_reflection_lists(cls, v: Any) -> Any:
         return v if v is not None else []
 
 

@@ -11,6 +11,7 @@ from memory.client import MemoryClient
 from memory.embedding import MockEmbeddingProvider, OpenAIEmbeddingProvider, truncate_embedding
 from memory.emotions import EmotionAnalyzer
 from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, Directive, Episode, EpisodeRole, Fact, FactHistory, Pattern, Session, SessionHandoff, TimelineEvent
+from memory.models import Reflection
 
 
 class InMemoryTransport:
@@ -25,6 +26,7 @@ class InMemoryTransport:
         self.timeline_events: list[TimelineEvent] = []
         self.decision_outcomes: list[DecisionOutcome] = []
         self.patterns: list[Pattern] = []
+        self.reflections: list[Reflection] = []
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
         self.session_handoffs: list[SessionHandoff] = []
@@ -201,6 +203,22 @@ class InMemoryTransport:
         _ = (agent_namespace, pattern_types)
         patterns = sorted(self.patterns, key=lambda pattern: (pattern.impact_score, pattern.last_observed_at), reverse=True)
         return patterns[:limit]
+
+    async def upsert_reflection(self, reflection: Reflection) -> Reflection:
+        self.reflections = [existing for existing in self.reflections if existing.reflection_key != reflection.reflection_key]
+        self.reflections.append(reflection)
+        return reflection
+
+    async def list_reflections(self, limit: int = 10, agent_namespace: str | None = None, statuses: list[str] | None = None):
+        _ = (agent_namespace, statuses)
+        reflections = sorted(self.reflections, key=lambda reflection: (reflection.confidence, reflection.last_observed_at), reverse=True)
+        return reflections[:limit]
+
+    async def delete_reflection(self, reflection_key: str, *, agent_namespace: str | None = None) -> bool:
+        _ = agent_namespace
+        before = len(self.reflections)
+        self.reflections = [existing for existing in self.reflections if existing.reflection_key != reflection_key]
+        return len(self.reflections) < before
 
     async def upsert_commitment(self, commitment: Commitment) -> Commitment:
         self.commitments = [existing for existing in self.commitments if existing.commitment_key != commitment.commitment_key]
@@ -447,6 +465,26 @@ async def test_add_pattern_persists_recurring_tendency() -> None:
 
     assert pattern.pattern_key == "auto:pattern:root-cause-debugging"
     assert transport.patterns[0].statement.startswith("When something important feels broken")
+
+
+@pytest.mark.asyncio
+async def test_add_reflection_persists_tentative_hypothesis() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+
+    reflection = await client.add_reflection(
+        kind="workflow_hypothesis",
+        statement="Possible workflow tendency: Validate boundary behavior before broad redesign.",
+        evidence_summary="Appeared repeatedly in sessions where boundary-level checks resolved regressions quickly.",
+        reflection_key="auto:reflection:boundary-first",
+        status="tentative",
+        confidence=0.76,
+        first_observed_at=datetime.now(timezone.utc),
+        last_observed_at=datetime.now(timezone.utc),
+    )
+
+    assert reflection.reflection_key == "auto:reflection:boundary-first"
+    assert transport.reflections[0].status.value == "tentative"
 
 
 @pytest.mark.asyncio

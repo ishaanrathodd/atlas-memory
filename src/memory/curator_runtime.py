@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -20,11 +21,14 @@ from memory.consolidation import (
     refresh_decision_outcomes,
     refresh_directives,
     refresh_patterns,
+    refresh_reflections,
     refresh_timeline_events,
 )
 from memory.emotions import EmotionAnalyzer
 from memory.embedding import OpenAIEmbeddingProvider
+from memory.eval_harness import run_replay_eval
 from memory.instance_identity import get_agent_namespace
+from memory.observability import record_task_observability
 from memory.transport import SupabaseTransport
 
 DEFAULT_HERMES_HOME = Path.home() / ".hermes"
@@ -208,6 +212,12 @@ async def process_memory(
         min_message_count=min_message_count,
         agent_namespace=agent_namespace,
     )
+    reflections = await refresh_reflections(
+        client,
+        lookback_days=3650,
+        min_message_count=min_message_count,
+        agent_namespace=agent_namespace,
+    )
     stats = await collect_stats(client)
 
     return {
@@ -230,6 +240,8 @@ async def process_memory(
         "decision_outcome_count": int(decision_outcomes.get("decision_outcome_count") or 0),
         "patterns_updated": int(patterns.get("patterns_upserted") or 0),
         "pattern_count": int(patterns.get("pattern_count") or 0),
+        "reflections_updated": int(reflections.get("reflections_upserted") or 0),
+        "reflection_count": int(reflections.get("reflection_count") or 0),
         "errors": int(consolidation.get("errors") or 0),
         "error_details": list(consolidation.get("error_details") or []),
         "stats": stats,
@@ -248,7 +260,16 @@ async def run_task(
     hermes_home: str | Path | None = None,
     lookback_hours: int | None = None,
     min_message_count: int | None = None,
+    scenarios_file: str | Path | None = None,
+    min_pass_rate: float | None = None,
 ) -> dict[str, Any]:
+    if task == "replay-eval":
+        resolved_min_pass_rate = min_pass_rate if min_pass_rate is not None else float(os.getenv("MEMORY_EVAL_MIN_PASS_RATE", "1.0"))
+        return await run_replay_eval(
+            scenarios_file=scenarios_file,
+            min_pass_rate=resolved_min_pass_rate,
+        )
+
     owns_client = client is None
     active_client = client or build_client()
     try:
@@ -283,10 +304,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m memory.curator_runtime")
     parser.add_argument(
         "task",
-        choices=("process-memory", "extract-facts", "backfill", "stats", "health"),
+        choices=("process-memory", "extract-facts", "backfill", "stats", "health", "replay-eval"),
     )
     parser.add_argument("--lookback-hours", type=int)
     parser.add_argument("--min-message-count", type=int)
+    parser.add_argument("--scenarios-file")
+    parser.add_argument("--min-pass-rate", type=float)
     return parser
 
 
@@ -295,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     hermes_home = os.getenv("HERMES_HOME") or str(DEFAULT_HERMES_HOME)
     load_hermes_env(hermes_home)
+    started_at = datetime.now(timezone.utc)
     try:
         result = asyncio.run(
             run_task(
@@ -302,9 +326,30 @@ def main(argv: list[str] | None = None) -> int:
                 hermes_home=hermes_home,
                 lookback_hours=args.lookback_hours,
                 min_message_count=args.min_message_count,
+                scenarios_file=args.scenarios_file,
+                min_pass_rate=args.min_pass_rate,
             )
         )
+        record_task_observability(
+            task=args.task,
+            result=result if isinstance(result, dict) else None,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            hermes_home=hermes_home,
+            error=None,
+        )
     except Exception as exc:
+        try:
+            record_task_observability(
+                task=args.task,
+                result=None,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+                hermes_home=hermes_home,
+                error=str(exc),
+            )
+        except Exception as obs_exc:
+            _log(f"Failed writing observability for {args.task}: {obs_exc}")
         _log(f"Curator task {args.task} failed: {exc}")
         return 1
 

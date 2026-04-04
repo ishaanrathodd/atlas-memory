@@ -36,6 +36,7 @@ from memory.models import (
     Fact,
     FactHistory,
     Pattern,
+    Reflection,
     SessionHandoff,
     Session,
     TimelineEvent,
@@ -606,6 +607,22 @@ class MemoryTransport(Protocol):
     async def delete_pattern(
         self,
         pattern_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool: ...
+
+    async def upsert_reflection(self, reflection: Reflection) -> Reflection: ...
+
+    async def list_reflections(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+    ) -> list[Reflection]: ...
+
+    async def delete_reflection(
+        self,
+        reflection_key: str,
         *,
         agent_namespace: str | None = None,
     ) -> bool: ...
@@ -1690,6 +1707,107 @@ class SupabaseTransport:
             raise
         return True
 
+    async def upsert_reflection(self, reflection: Reflection) -> Reflection:
+        payload = _ensure_payload_agent_namespace(_serialize_value(reflection.model_dump(exclude_none=True)))
+        reflection_key = str(payload.get("reflection_key") or "").strip()
+        if not reflection_key:
+            raise ValueError("Reflection.reflection_key is required.")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("reflections")
+                .select("*")
+                .eq("reflection_key", reflection_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "reflections"):
+                logger.info("Memory reflections table is not available yet; skipping reflection upsert.")
+                return reflection
+            raise
+
+        existing = _first_response_record(response)
+        if existing is not None:
+            payload.setdefault("updated_at", _now_utc().isoformat())
+            response, _ = await self._update_payload(
+                "reflections",
+                str(existing["id"]),
+                payload,
+                operation="upsert_reflection",
+            )
+            if response is None:
+                refreshed = await self._fetch_row("reflections", str(existing["id"]))
+                if refreshed is None:
+                    raise LookupError("upsert_reflection returned no rows.")
+                return Reflection.model_validate(_normalize_record(refreshed))
+            return Reflection.model_validate(_normalize_record(self._require_record(response, operation="upsert_reflection")))
+
+        response, _ = await self._insert_payload("reflections", payload, operation="insert_reflection")
+        return Reflection.model_validate(_normalize_record(self._require_record(response, operation="insert_reflection")))
+
+    async def list_reflections(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+    ) -> list[Reflection]:
+        requested_statuses = [str(status).strip() for status in (statuses or []) if str(status).strip()]
+
+        def _query() -> Any:
+            query = self._schema_client().table("reflections").select("*")
+            if requested_statuses:
+                query = query.in_("status", requested_statuses)
+            query = query.order("confidence", desc=True).order("last_observed_at", desc=True).limit(max(limit * 4, 20))
+            return query.execute()
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "reflections"):
+                logger.info("Memory reflections table is not available yet; returning an empty reflections list.")
+                return []
+            raise
+
+        reflections = [Reflection.model_validate(_normalize_record(item)) for item in _response_rows(response)]
+        reflections = _filter_records_by_agent_namespace(reflections, agent_namespace)
+        return reflections[:limit]
+
+    async def delete_reflection(
+        self,
+        reflection_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        normalized_key = str(reflection_key or "").strip()
+        if not normalized_key:
+            return False
+
+        def _delete() -> Any:
+            return (
+                self._schema_client()
+                .table("reflections")
+                .delete()
+                .eq("reflection_key", normalized_key)
+                .eq("agent_namespace", _resolved_agent_namespace(agent_namespace))
+                .execute()
+            )
+
+        try:
+            await self._run(_delete)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "reflections"):
+                logger.info("Memory reflections table is not available yet; skipping reflection delete.")
+                return False
+            raise
+        return True
+
     async def upsert_commitment(self, commitment: Commitment) -> Commitment:
         payload = _ensure_payload_agent_namespace(_serialize_value(commitment.model_dump(exclude_none=True)))
         commitment_key = str(payload.get("commitment_key") or "").strip()
@@ -2065,6 +2183,25 @@ class RemoteTransport:
     async def delete_pattern(
         self,
         pattern_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def upsert_reflection(self, reflection: Reflection) -> Reflection:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def list_reflections(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+    ) -> list[Reflection]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def delete_reflection(
+        self,
+        reflection_key: str,
         *,
         agent_namespace: str | None = None,
     ) -> bool:

@@ -33,6 +33,9 @@ from memory.models import (
     Pattern,
     PatternType,
     Platform,
+    Reflection,
+    ReflectionKind,
+    ReflectionStatus,
     Session,
     SessionHandoff,
     TimelineEvent,
@@ -60,6 +63,7 @@ class MockTransport:
         self.timeline_events: list[TimelineEvent] = []
         self.decision_outcomes: list[DecisionOutcome] = []
         self.patterns: list[Pattern] = []
+        self.reflections: list[Reflection] = []
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
         self.session_handoffs: list[SessionHandoff] = []
@@ -67,6 +71,7 @@ class MockTransport:
         self.last_list_directives_namespace: str | None | object = "__unset__"
         self.last_list_decision_outcomes_namespace: str | None | object = "__unset__"
         self.last_list_patterns_namespace: str | None | object = "__unset__"
+        self.last_list_reflections_namespace: str | None | object = "__unset__"
         self.last_list_commitments_namespace: str | None | object = "__unset__"
         self.last_list_corrections_namespace: str | None | object = "__unset__"
         self.last_list_timeline_namespace: str | None | object = "__unset__"
@@ -242,6 +247,23 @@ class MockTransport:
         self.last_list_patterns_namespace = agent_namespace
         patterns = sorted(self.patterns, key=lambda pattern: (pattern.impact_score, pattern.last_observed_at), reverse=True)
         return patterns[:limit]
+
+    async def upsert_reflection(self, reflection: Reflection):
+        self.reflections = [existing for existing in self.reflections if existing.reflection_key != reflection.reflection_key]
+        self.reflections.append(reflection)
+        return reflection
+
+    async def list_reflections(self, limit: int = 10, agent_namespace: str | None = None, statuses: list[str] | None = None):
+        _ = statuses
+        self.last_list_reflections_namespace = agent_namespace
+        reflections = sorted(self.reflections, key=lambda reflection: (reflection.confidence, reflection.last_observed_at), reverse=True)
+        return reflections[:limit]
+
+    async def delete_reflection(self, reflection_key: str, *, agent_namespace: str | None = None):
+        _ = agent_namespace
+        before = len(self.reflections)
+        self.reflections = [existing for existing in self.reflections if existing.reflection_key != reflection_key]
+        return len(self.reflections) < before
 
     async def upsert_commitment(self, commitment: Commitment):
         self.commitments = [existing for existing in self.commitments if existing.commitment_key != commitment.commitment_key]
@@ -1456,3 +1478,37 @@ async def test_enrich_context_formats_all_required_sections() -> None:
     assert "Discussing launch timing and deployment blockers." in context
     assert "Dominant emotions: anticipation, fear" in context
     assert bridge_context == context
+
+
+@pytest.mark.asyncio
+async def test_collect_enrichment_payload_surfaces_reflections_for_introspective_queries() -> None:
+    _, _, transport = _build_client_with_transport()
+    transport.reflections = [
+        Reflection(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=ReflectionKind.BLIND_SPOT,
+            statement="Possible blind spot: The user may optimize for speed before validating edge-case reliability.",
+            evidence_summary="Repeated incidents where fast rollout introduced regressions until edge-case checks were added.",
+            reflection_key="auto:reflection:test-blind-spot",
+            status=ReflectionStatus.TENTATIVE,
+            confidence=0.79,
+            first_observed_at=_utcnow() - timedelta(days=7),
+            last_observed_at=_utcnow() - timedelta(days=1),
+            supporting_episode_ids=[],
+            supporting_session_ids=[],
+            tags=["derived", "reflection", "tentative"],
+        )
+    ]
+
+    payload = await collect_enrichment_payload(
+        transport,
+        "what do you think is my biggest blind spot?",
+        platform="local",
+        active_session_id=str(uuid4()),
+        agent_namespace="main",
+    )
+
+    assert payload.reflections
+    assert payload.reflections[0].reflection_key == "auto:reflection:test-blind-spot"
+    assert transport.last_list_reflections_namespace == "main"

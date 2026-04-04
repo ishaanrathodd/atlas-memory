@@ -36,6 +36,9 @@ from memory.models import (
     FactOperation,
     Pattern,
     PatternType,
+    Reflection,
+    ReflectionKind,
+    ReflectionStatus,
     Platform,
     normalize_platform,
     SessionHandoff,
@@ -588,6 +591,59 @@ class MemoryClient:
             pattern_types=pattern_types,
         )
 
+    async def upsert_reflection(self, reflection: Reflection) -> Reflection:
+        return await self.transport.upsert_reflection(reflection)
+
+    async def add_reflection(
+        self,
+        *,
+        kind: str,
+        statement: str,
+        reflection_key: str,
+        first_observed_at: datetime,
+        last_observed_at: datetime,
+        evidence_summary: str | None = None,
+        status: str = "tentative",
+        confidence: float = 0.62,
+        supporting_episode_ids: list[Any] | None = None,
+        supporting_session_ids: list[Any] | None = None,
+        tags: list[str] | None = None,
+        agent_namespace: str | None = None,
+    ) -> Reflection:
+        now = _utcnow()
+        normalized_statement = str(statement or "").strip()
+        if not normalized_statement:
+            raise ValueError("Reflection statement cannot be empty.")
+        record = Reflection(
+            agent_namespace=agent_namespace,
+            kind=ReflectionKind(kind),
+            statement=normalized_statement,
+            evidence_summary=(str(evidence_summary).strip() if evidence_summary else None),
+            reflection_key=str(reflection_key),
+            status=ReflectionStatus(status),
+            confidence=confidence,
+            first_observed_at=first_observed_at,
+            last_observed_at=last_observed_at,
+            supporting_episode_ids=list(supporting_episode_ids or []),
+            supporting_session_ids=list(supporting_session_ids or []),
+            tags=list(tags or []),
+            created_at=now,
+            updated_at=now,
+        )
+        return await self.transport.upsert_reflection(record)
+
+    async def list_reflections(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+    ) -> list[Reflection]:
+        return await self.transport.list_reflections(
+            limit=limit,
+            agent_namespace=agent_namespace,
+            statuses=statuses,
+        )
+
     async def upsert_commitment(self, commitment: Commitment) -> Commitment:
         return await self.transport.upsert_commitment(commitment)
 
@@ -887,6 +943,7 @@ class MemoryClient:
                 refresh_decision_outcomes,
                 refresh_directives,
                 refresh_patterns,
+                refresh_reflections,
                 refresh_timeline_events,
             )
 
@@ -981,6 +1038,17 @@ class MemoryClient:
                         except Exception as exc:
                             logger.warning("Warm live curator failed to refresh patterns: %s", exc)
                             result["patterns_error"] = str(exc)
+                        try:
+                            reflections_result = await refresh_reflections(
+                                self,
+                                lookback_days=3650,
+                                min_message_count=3,
+                                agent_namespace=agent_namespace,
+                            )
+                            result["reflections"] = reflections_result
+                        except Exception as exc:
+                            logger.warning("Warm live curator failed to refresh reflections: %s", exc)
+                            result["reflections_error"] = str(exc)
 
                         result["warm_ran"] = True
                         model_config["atlas_warm_curator_at"] = now.isoformat()

@@ -1,0 +1,65 @@
+[
+  {
+    "id": "advice_uses_prior_outcome",
+    "description": "Advice queries should surface durable prior outcomes and relevant habits.",
+    "user_message": "how should I handle rollout reliability for this release?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "root-cause debugging",
+      "Use canary checks before full rollout"
+    ],
+    "min_counts": {
+      "facts": 1,
+      "decision_outcomes": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User prefers root-cause debugging before broad patches.",
+          "category": "habit",
+          "tags": ["debugging", "reliability"],
+          "confidence": 0.92
+        }
+      ],
+      "decision_outcomes": [
+        {
+          "kind": "communication",
+          "status": "success",
+          "decision": "Added staged rollout checks.",
+          "outcome": "Incidents dropped after canary validation.",
+          "lesson": "Use canary checks before full rollout.",
+          "importance_score": 0.9,
+          "confidence": 0.88,
+          "tags": ["reliability", "rollout"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "introspection_surfaces_reflection",
+    "description": "Introspective prompts should surface supported/tentative reflections.",
+    "user_message": "what do you think is my biggest blind spot?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "Possible blind spot",
+      "edge-case checks"
+    ],
+    "min_counts": {
+      "reflections": 1
+    },
+    "seed": {
+      "reflections": [
+        {
+          "kind": "blind_spot",
+          "status": "tentative",
+          "statement": "Possible blind spot: The user may optimize for speed before validating edge cases.",
+          "evidence_summary": "Fast rollouts caused regressions until edge-case checks were added.",
+          "confidence": 0.83,
+          "tags": ["derived", "reflection", "reliability"]
+        }
+      ]
+    }
+  }
+]

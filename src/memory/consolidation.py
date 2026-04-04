@@ -25,6 +25,7 @@ from memory.models import (
     Fact,
     FactCategory,
     PatternType,
+    ReflectionStatus,
     Session,
 )
 from memory.transport import (
@@ -62,6 +63,8 @@ DECISION_OUTCOME_LOOKBACK_DAYS = 3650
 DECISION_OUTCOME_SESSION_LIMIT = 64
 PATTERNS_LOOKBACK_DAYS = 3650
 PATTERNS_SESSION_LIMIT = 96
+REFLECTIONS_LOOKBACK_DAYS = 3650
+REFLECTIONS_SESSION_LIMIT = 96
 _MANAGED_ACTIVE_STATE_KEYS = {
     "auto:project:primary",
     "auto:project:secondary",
@@ -2736,6 +2739,175 @@ async def refresh_decision_outcomes(
         "decision_outcomes_upserted": upserted,
         "decision_outcomes_pruned": pruned,
         "decision_outcome_count": len(visible_outcomes),
+    }
+
+
+def _reflection_key(source_kind: str, source_key: str) -> str:
+    return _derived_memory_key("auto:reflection", f"{source_kind}:{source_key}")
+
+
+def _reflection_kind_from_pattern(pattern_type: PatternType) -> str:
+    if pattern_type in {PatternType.TRAP, PatternType.EMOTIONAL_PATTERN, PatternType.TRUST_PATTERN}:
+        return "blind_spot"
+    if pattern_type in {PatternType.STRENGTH, PatternType.QUALITY_BAR}:
+        return "value_hypothesis"
+    if pattern_type in {PatternType.WORK_PATTERN, PatternType.DECISION_STYLE}:
+        return "workflow_hypothesis"
+    return "communication_hypothesis"
+
+
+def _reflection_statement_from_pattern(statement: str, kind: str) -> str:
+    cleaned = _collapse_whitespace(statement, max_length=220).rstrip(".")
+    if kind == "blind_spot":
+        return f"Possible blind spot: {cleaned}."
+    if kind == "value_hypothesis":
+        return f"Possible value driver: {cleaned}."
+    if kind == "workflow_hypothesis":
+        return f"Possible workflow tendency: {cleaned}."
+    return f"Possible communication tendency: {cleaned}."
+
+
+def _reflection_statement_from_outcome(decision: str, outcome: str, lesson: str | None) -> str:
+    if lesson:
+        return f"Possible operating principle: {_collapse_whitespace(lesson, max_length=220).rstrip('.')}."
+    decision_part = _collapse_whitespace(decision, max_length=140).rstrip(".")
+    outcome_part = _collapse_whitespace(outcome, max_length=140).rstrip(".")
+    return f"Possible pattern to monitor: {decision_part} -> {outcome_part}."
+
+
+def _reflection_status_from_pattern(confidence: float, frequency_score: float, support_count: int) -> ReflectionStatus:
+    if confidence >= 0.78 and frequency_score >= 0.68 and support_count >= 2:
+        return ReflectionStatus.SUPPORTED
+    return ReflectionStatus.TENTATIVE
+
+
+def _reflection_status_from_outcome(confidence: float, importance_score: float) -> ReflectionStatus:
+    if confidence >= 0.8 and importance_score >= 0.72:
+        return ReflectionStatus.SUPPORTED
+    return ReflectionStatus.TENTATIVE
+
+
+async def refresh_reflections(
+    client: MemoryClient,
+    *,
+    lookback_days: int = REFLECTIONS_LOOKBACK_DAYS,
+    min_message_count: int = 3,
+    now: datetime | None = None,
+    agent_namespace: str | None = None,
+) -> dict[str, Any]:
+    _ = min_message_count
+    reference_time = now or _utcnow()
+    since = reference_time - timedelta(days=lookback_days)
+    patterns = await client.list_patterns(limit=REFLECTIONS_SESSION_LIMIT, agent_namespace=agent_namespace)
+    outcomes = await client.list_decision_outcomes(
+        limit=REFLECTIONS_SESSION_LIMIT,
+        agent_namespace=agent_namespace,
+        statuses=[DecisionOutcomeStatus.SUCCESS.value, DecisionOutcomeStatus.FAILURE.value, DecisionOutcomeStatus.MIXED.value],
+    )
+    existing_reflections = await client.list_reflections(limit=512, agent_namespace=agent_namespace)
+    managed_existing_keys = {
+        reflection.reflection_key
+        for reflection in existing_reflections
+        if str(reflection.reflection_key or "").startswith("auto:reflection:")
+    }
+
+    upserted = 0
+    managed_kept_keys: set[str] = set()
+
+    for pattern in patterns:
+        if pattern.last_observed_at < since:
+            continue
+        if float(pattern.confidence) < 0.56 or float(pattern.impact_score) < 0.45:
+            continue
+        reflection_kind = _reflection_kind_from_pattern(pattern.pattern_type)
+        reflection_key = _reflection_key("pattern", pattern.pattern_key)
+        status = _reflection_status_from_pattern(
+            float(pattern.confidence),
+            float(pattern.frequency_score),
+            len(pattern.supporting_session_ids),
+        )
+        confidence = min(
+            0.92,
+            max(
+                0.55,
+                (float(pattern.confidence) * 0.6)
+                + (float(pattern.impact_score) * 0.2)
+                + (float(pattern.frequency_score) * 0.2),
+            ),
+        )
+        await client.add_reflection(
+            kind=reflection_kind,
+            statement=_reflection_statement_from_pattern(pattern.statement, reflection_kind),
+            evidence_summary=_collapse_whitespace(pattern.description or pattern.statement, max_length=220),
+            reflection_key=reflection_key,
+            status=status.value,
+            confidence=confidence,
+            first_observed_at=pattern.first_observed_at,
+            last_observed_at=pattern.last_observed_at,
+            supporting_episode_ids=[str(value) for value in pattern.supporting_episode_ids],
+            supporting_session_ids=[str(value) for value in pattern.supporting_session_ids],
+            tags=["derived", "reflection", "pattern", pattern.pattern_type.value, status.value],
+            agent_namespace=agent_namespace,
+        )
+        managed_kept_keys.add(reflection_key)
+        upserted += 1
+
+    for outcome in outcomes:
+        if outcome.event_time < since:
+            continue
+        if outcome.status == DecisionOutcomeStatus.OPEN:
+            continue
+        if float(outcome.confidence) < 0.56 or float(outcome.importance_score) < 0.45:
+            continue
+        reflection_kind = "communication_hypothesis" if outcome.kind.value == "communication" else "workflow_hypothesis"
+        reflection_key = _reflection_key("outcome", outcome.outcome_key)
+        status = _reflection_status_from_outcome(float(outcome.confidence), float(outcome.importance_score))
+        confidence = min(
+            0.9,
+            max(
+                0.55,
+                (float(outcome.confidence) * 0.65)
+                + (float(outcome.importance_score) * 0.35),
+            ),
+        )
+        evidence = _collapse_whitespace(
+            " ".join(part for part in [outcome.decision, outcome.outcome, outcome.lesson or ""] if part),
+            max_length=220,
+        )
+        await client.add_reflection(
+            kind=reflection_kind,
+            statement=_reflection_statement_from_outcome(outcome.decision, outcome.outcome, outcome.lesson),
+            evidence_summary=evidence,
+            reflection_key=reflection_key,
+            status=status.value,
+            confidence=confidence,
+            first_observed_at=outcome.event_time,
+            last_observed_at=outcome.event_time,
+            supporting_episode_ids=[str(value) for value in outcome.source_episode_ids],
+            supporting_session_ids=[str(outcome.session_id)] if outcome.session_id is not None else [],
+            tags=["derived", "reflection", "outcome", outcome.kind.value, status.value],
+            agent_namespace=agent_namespace,
+        )
+        managed_kept_keys.add(reflection_key)
+        upserted += 1
+
+    pruned = 0
+    delete_reflection = getattr(client.transport, "delete_reflection", None)
+    if callable(delete_reflection):
+        for stale_key in sorted(managed_existing_keys - managed_kept_keys):
+            removed = await delete_reflection(stale_key, agent_namespace=agent_namespace)
+            if removed:
+                pruned += 1
+
+    visible_reflections = await client.list_reflections(
+        limit=12,
+        agent_namespace=agent_namespace,
+        statuses=[ReflectionStatus.SUPPORTED.value, ReflectionStatus.TENTATIVE.value],
+    )
+    return {
+        "reflections_upserted": upserted,
+        "reflections_pruned": pruned,
+        "reflection_count": len(visible_reflections),
     }
 
 

@@ -1,0 +1,38 @@
+name: Atlas Regression Gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: atlas-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-and-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-asyncio supabase pydantic httpx numpy
+
+      - name: Run unit tests (excluding e2e)
+        run: |
+          PYTHONPATH=src python -m pytest tests -q --ignore=tests/test_e2e.py
+
+      - name: Run replay eval regression gate
+        run: |
+          PYTHONPATH=src python -m memory.curator_runtime replay-eval --scenarios-file tests/fixtures/replay_eval_scenarios.json --min-pass-rate 1.0

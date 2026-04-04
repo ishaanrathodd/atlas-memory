@@ -23,11 +23,13 @@ from memory.consolidation import (
     refresh_decision_outcomes,
     refresh_directives,
     refresh_patterns,
+    refresh_reflections,
     refresh_timeline_events,
 )
 from memory.embedding import MockEmbeddingProvider
 from memory.emotions import EmotionAnalyzer
-from memory.models import ActiveState, Commitment, CommitmentStatus, Correction, CorrectionKind, DecisionOutcome, DecisionOutcomeKind, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, FactHistory, Pattern, PatternType, Platform, Session, TimelineEvent, TimelineEventKind
+from memory.instance_identity import get_agent_namespace
+from memory.models import ActiveState, Commitment, CommitmentStatus, Correction, CorrectionKind, DecisionOutcome, DecisionOutcomeKind, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, FactHistory, Pattern, PatternType, Platform, Reflection, Session, TimelineEvent, TimelineEventKind
 
 
 def _utcnow() -> datetime:
@@ -45,6 +47,7 @@ class CuratorRuntimeTransport:
         self.timeline_events: list[TimelineEvent] = []
         self.decision_outcomes: list[DecisionOutcome] = []
         self.patterns: list[Pattern] = []
+        self.reflections: list[Reflection] = []
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
         self.healthy = True
@@ -303,6 +306,53 @@ class CuratorRuntimeTransport:
         ]
         return len(self.patterns) != before
 
+    async def upsert_reflection(self, reflection: Reflection) -> Reflection:
+        self.reflections = [existing for existing in self.reflections if existing.reflection_key != reflection.reflection_key]
+        if reflection.id is None:
+            reflection = reflection.model_copy(update={"id": uuid4()})
+        self.reflections.append(reflection)
+        return reflection
+
+    async def list_reflections(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+    ) -> list[Reflection]:
+        reflections = list(self.reflections)
+        if agent_namespace is not None:
+            reflections = [
+                reflection
+                for reflection in reflections
+                if reflection.agent_namespace == agent_namespace or (agent_namespace == "main" and reflection.agent_namespace is None)
+            ]
+        if statuses:
+            allowed = set(statuses)
+            reflections = [reflection for reflection in reflections if reflection.status.value in allowed]
+        reflections.sort(key=lambda reflection: (reflection.confidence, reflection.last_observed_at), reverse=True)
+        return reflections[:limit]
+
+    async def delete_reflection(
+        self,
+        reflection_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        before = len(self.reflections)
+
+        def _matches(namespace: str | None) -> bool:
+            return namespace == agent_namespace or (agent_namespace == "main" and namespace is None)
+
+        self.reflections = [
+            reflection
+            for reflection in self.reflections
+            if not (
+                reflection.reflection_key == reflection_key
+                and _matches(getattr(reflection, "agent_namespace", None))
+            )
+        ]
+        return len(self.reflections) != before
+
     async def upsert_commitment(self, commitment: Commitment) -> Commitment:
         self.commitments = [existing for existing in self.commitments if existing.commitment_key != commitment.commitment_key]
         if commitment.id is None:
@@ -402,6 +452,7 @@ def _make_client(transport: CuratorRuntimeTransport | None = None) -> MemoryClie
 def _make_session(*, started_at: datetime, message_count: int, summary: str | None = None) -> Session:
     return Session(
         id=uuid4(),
+        agent_namespace=get_agent_namespace(),
         platform=Platform.TELEGRAM,
         started_at=started_at,
         message_count=message_count,
@@ -1787,6 +1838,11 @@ def test_cli_parser_accepts_supported_tasks() -> None:
 
     assert args.task == "process-memory"
 
+    replay_args = parser.parse_args(["replay-eval", "--scenarios-file", "tests/fixtures/replay_eval_scenarios.json", "--min-pass-rate", "0.9"])
+    assert replay_args.task == "replay-eval"
+    assert replay_args.scenarios_file == "tests/fixtures/replay_eval_scenarios.json"
+    assert replay_args.min_pass_rate == 0.9
+
 
 def test_runtime_main_dispatches_task_and_prints_json(
     monkeypatch: pytest.MonkeyPatch,
@@ -1799,11 +1855,14 @@ def test_runtime_main_dispatches_task_and_prints_json(
         hermes_home: str | Path | None = None,
         lookback_hours: int | None = None,
         min_message_count: int | None = None,
+        scenarios_file: str | Path | None = None,
+        min_pass_rate: float | None = None,
         state_db_path: str | Path | None = None,
         source: str | None = None,
         from_date: str | None = None,
         to_date: str | None = None,
     ) -> dict[str, object]:
+        _ = (scenarios_file, min_pass_rate, state_db_path, source, from_date, to_date)
         assert task == "health"
         assert hermes_home is not None
         return {"ok": True, "task": task}
@@ -1827,6 +1886,35 @@ async def test_run_task_health_reports_supabase_status() -> None:
     result = await runtime.run_task("health", client=client)
 
     assert result == {"ok": False}
+
+
+@pytest.mark.asyncio
+async def test_run_task_replay_eval_uses_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_replay_eval(*, scenarios_file=None, min_pass_rate: float = 1.0) -> dict[str, object]:
+        assert scenarios_file == "tests/fixtures/replay_eval_scenarios.json"
+        assert min_pass_rate == 0.95
+        return {
+            "task": "replay-eval",
+            "total": 2,
+            "passed": 2,
+            "failed": 0,
+            "pass_rate": 1.0,
+            "min_pass_rate": min_pass_rate,
+            "meets_threshold": True,
+            "failed_scenarios": [],
+            "results": [],
+        }
+
+    monkeypatch.setattr(runtime, "run_replay_eval", fake_replay_eval)
+
+    result = await runtime.run_task(
+        "replay-eval",
+        scenarios_file="tests/fixtures/replay_eval_scenarios.json",
+        min_pass_rate=0.95,
+    )
+
+    assert result["task"] == "replay-eval"
+    assert result["meets_threshold"] is True
 
 
 @pytest.mark.asyncio
@@ -1859,6 +1947,9 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     async def fake_refresh_patterns(*args, **kwargs) -> dict[str, object]:
         return {"patterns_upserted": 3, "pattern_count": 5}
 
+    async def fake_refresh_reflections(*args, **kwargs) -> dict[str, object]:
+        return {"reflections_upserted": 2, "reflection_count": 4}
+
     async def fake_refresh_commitments(*args, **kwargs) -> dict[str, object]:
         return {"commitments_upserted": 2, "commitment_count": 3}
 
@@ -1874,6 +1965,7 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     monkeypatch.setattr(runtime, "refresh_timeline_events", fake_refresh_timeline)
     monkeypatch.setattr(runtime, "refresh_decision_outcomes", fake_refresh_decision_outcomes)
     monkeypatch.setattr(runtime, "refresh_patterns", fake_refresh_patterns)
+    monkeypatch.setattr(runtime, "refresh_reflections", fake_refresh_reflections)
 
     result = await runtime.run_task("process-memory", client=client)
 
@@ -1895,6 +1987,8 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     assert result["decision_outcome_count"] == 6
     assert result["patterns_updated"] == 3
     assert result["pattern_count"] == 5
+    assert result["reflections_updated"] == 2
+    assert result["reflection_count"] == 4
     assert result["stats"] == {"session_count": 10, "episode_count": 20, "fact_count": 30}
 
 
@@ -1940,4 +2034,4 @@ def test_load_hermes_env_resolves_shell_references(tmp_path: Path, monkeypatch: 
     loaded = runtime.load_hermes_env(hermes_home)
 
     assert loaded["MEMORY_OPENAI_BASE_URL"] == "https://example.test/v1"
-    assert os.environ["OPENAI_API_KEY"] == "glm-secret"
+    assert os.environ["GLM_API_KEY"] == "glm-secret"
