@@ -946,6 +946,7 @@ class MemoryClient:
                 consolidate_session_if_needed,
                 refresh_decision_outcomes,
                 refresh_directives,
+                refresh_memory_cases,
                 refresh_patterns,
                 refresh_reflections,
                 refresh_timeline_events,
@@ -1031,6 +1032,16 @@ class MemoryClient:
                         except Exception as exc:
                             logger.warning("Warm live curator failed to refresh decision_outcomes: %s", exc)
                             result["decision_outcomes_error"] = str(exc)
+                        try:
+                            memory_cases_result = await refresh_memory_cases(
+                                self,
+                                lookback_days=3650,
+                                agent_namespace=agent_namespace,
+                            )
+                            result["memory_cases"] = memory_cases_result
+                        except Exception as exc:
+                            logger.warning("Warm live curator failed to refresh memory_cases: %s", exc)
+                            result["memory_cases_error"] = str(exc)
                         try:
                             patterns_result = await refresh_patterns(
                                 self,

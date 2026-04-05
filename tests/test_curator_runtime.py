@@ -22,6 +22,7 @@ from memory.consolidation import (
     refresh_corrections,
     refresh_decision_outcomes,
     refresh_directives,
+    refresh_memory_cases,
     refresh_patterns,
     refresh_reflections,
     refresh_timeline_events,
@@ -29,7 +30,7 @@ from memory.consolidation import (
 from memory.embedding import MockEmbeddingProvider
 from memory.emotions import EmotionAnalyzer
 from memory.instance_identity import get_agent_namespace
-from memory.models import ActiveState, Commitment, CommitmentStatus, Correction, CorrectionKind, DecisionOutcome, DecisionOutcomeKind, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, FactHistory, Pattern, PatternType, Platform, Reflection, Session, TimelineEvent, TimelineEventKind
+from memory.models import ActiveState, Commitment, CommitmentStatus, Correction, CorrectionKind, DecisionOutcome, DecisionOutcomeKind, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, FactHistory, MemoryCase, Pattern, PatternType, Platform, Reflection, Session, TimelineEvent, TimelineEventKind
 
 
 def _utcnow() -> datetime:
@@ -45,6 +46,8 @@ class CuratorRuntimeTransport:
         self.active_state: list[ActiveState] = []
         self.directives: list[Directive] = []
         self.timeline_events: list[TimelineEvent] = []
+        self.memory_cases: list[MemoryCase] = []
+        self.case_evidence_links: list[dict[str, object]] = []
         self.decision_outcomes: list[DecisionOutcome] = []
         self.patterns: list[Pattern] = []
         self.reflections: list[Reflection] = []
@@ -305,6 +308,93 @@ class CuratorRuntimeTransport:
             )
         ]
         return len(self.patterns) != before
+
+    async def upsert_memory_case(self, case: MemoryCase) -> MemoryCase:
+        self.memory_cases = [existing for existing in self.memory_cases if existing.case_key != case.case_key]
+        if case.id is None:
+            case = case.model_copy(update={"id": uuid4()})
+        self.memory_cases.append(case)
+        return case
+
+    async def list_memory_cases(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        outcome_statuses: list[str] | None = None,
+    ) -> list[MemoryCase]:
+        cases = list(self.memory_cases)
+        if agent_namespace is not None:
+            cases = [
+                case
+                for case in cases
+                if case.agent_namespace == agent_namespace or (agent_namespace == "main" and case.agent_namespace is None)
+            ]
+        if outcome_statuses:
+            allowed = set(outcome_statuses)
+            cases = [case for case in cases if case.outcome_status.value in allowed]
+        cases.sort(key=lambda case: (case.impact_score, case.last_observed_at), reverse=True)
+        return cases[:limit]
+
+    async def delete_memory_case(
+        self,
+        case_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        before = len(self.memory_cases)
+
+        def _matches(namespace: str | None) -> bool:
+            return namespace == agent_namespace or (agent_namespace == "main" and namespace is None)
+
+        self.memory_cases = [
+            case
+            for case in self.memory_cases
+            if not (
+                case.case_key == case_key
+                and _matches(getattr(case, "agent_namespace", None))
+            )
+        ]
+        return len(self.memory_cases) != before
+
+    async def upsert_case_evidence_link(self, link):
+        self.case_evidence_links = [
+            existing
+            for existing in self.case_evidence_links
+            if not (
+                str(existing.get("case_id")) == str(link.case_id)
+                and str(existing.get("evidence_type")) == link.evidence_type.value
+                and str(existing.get("evidence_id")) == str(link.evidence_id)
+            )
+        ]
+        self.case_evidence_links.append(
+            {
+                "id": str(link.id or uuid4()),
+                "agent_namespace": link.agent_namespace,
+                "case_id": str(link.case_id),
+                "evidence_type": link.evidence_type.value,
+                "evidence_id": str(link.evidence_id),
+                "relevance_score": float(link.relevance_score),
+                "note": link.note,
+            }
+        )
+        return link
+
+    async def list_case_evidence_links(
+        self,
+        case_id: str,
+        limit: int = 50,
+        agent_namespace: str | None = None,
+    ):
+        links = [
+            link
+            for link in self.case_evidence_links
+            if str(link.get("case_id")) == str(case_id)
+            if agent_namespace is None
+            or link.get("agent_namespace") == agent_namespace
+            or (agent_namespace == "main" and link.get("agent_namespace") is None)
+        ]
+        links.sort(key=lambda link: float(link.get("relevance_score") or 0.0), reverse=True)
+        return links[:limit]
 
     async def upsert_reflection(self, reflection: Reflection) -> Reflection:
         self.reflections = [existing for existing in self.reflections if existing.reflection_key != reflection.reflection_key]
@@ -1251,6 +1341,59 @@ async def test_refresh_decision_outcomes_prunes_stale_auto_outcomes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_refresh_memory_cases_materializes_cases_from_outcomes_and_patterns() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+
+    outcome = DecisionOutcome(
+        id=uuid4(),
+        agent_namespace="main",
+        kind=DecisionOutcomeKind.WORKFLOW,
+        title="checkout migration failure",
+        decision="Rushed checkout migration rollout without verification gates.",
+        outcome="Production regressions and rework consumed two days.",
+        lesson="Ship with replay-eval and CI regression gates before full rollout.",
+        outcome_key="auto:decision-outcome:checkout-failure",
+        status=DecisionOutcomeStatus.FAILURE,
+        confidence=0.93,
+        importance_score=0.91,
+        event_time=now - timedelta(days=10),
+        tags=["checkout", "migration", "rollout", "verification"],
+    )
+    transport.decision_outcomes = [outcome]
+    transport.patterns = [
+        Pattern(
+            id=uuid4(),
+            agent_namespace="main",
+            pattern_type=PatternType.TRAP,
+            statement="Rollout speed tends to outrun verification depth under deadline pressure.",
+            description="Repeated cross-session failure mode during shipping crunch windows.",
+            pattern_key="auto:pattern:verification-trap",
+            confidence=0.89,
+            frequency_score=0.84,
+            impact_score=0.9,
+            first_observed_at=now - timedelta(days=60),
+            last_observed_at=now - timedelta(days=2),
+            supporting_episode_ids=[],
+            supporting_session_ids=[],
+            tags=["checkout", "migration", "verification"],
+        )
+    ]
+
+    stats = await refresh_memory_cases(client, now=now, agent_namespace="main")
+
+    assert stats["memory_cases_upserted"] == 1
+    assert stats["memory_case_count"] == 1
+    assert transport.memory_cases
+    stored_case = transport.memory_cases[0]
+    assert stored_case.case_key.startswith("auto:case:")
+    assert stored_case.source_outcome_ids == [outcome.id]
+    assert "case-memory" in stored_case.tags
+    assert len(transport.case_evidence_links) >= 1
+
+
+@pytest.mark.asyncio
 async def test_refresh_patterns_materializes_repeated_tendencies() -> None:
     transport = CuratorRuntimeTransport()
     client = _make_client(transport)
@@ -2040,6 +2183,9 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     async def fake_refresh_patterns(*args, **kwargs) -> dict[str, object]:
         return {"patterns_upserted": 3, "pattern_count": 5}
 
+    async def fake_refresh_memory_cases(*args, **kwargs) -> dict[str, object]:
+        return {"memory_cases_upserted": 2, "memory_case_count": 4}
+
     async def fake_refresh_reflections(*args, **kwargs) -> dict[str, object]:
         return {"reflections_upserted": 2, "reflection_count": 4}
 
@@ -2057,6 +2203,7 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     monkeypatch.setattr(runtime, "refresh_corrections", fake_refresh_corrections)
     monkeypatch.setattr(runtime, "refresh_timeline_events", fake_refresh_timeline)
     monkeypatch.setattr(runtime, "refresh_decision_outcomes", fake_refresh_decision_outcomes)
+    monkeypatch.setattr(runtime, "refresh_memory_cases", fake_refresh_memory_cases)
     monkeypatch.setattr(runtime, "refresh_patterns", fake_refresh_patterns)
     monkeypatch.setattr(runtime, "refresh_reflections", fake_refresh_reflections)
 
@@ -2078,6 +2225,8 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     assert result["timeline_event_count"] == 7
     assert result["decision_outcomes_updated"] == 4
     assert result["decision_outcome_count"] == 6
+    assert result["memory_cases_updated"] == 2
+    assert result["memory_case_count"] == 4
     assert result["patterns_updated"] == 3
     assert result["pattern_count"] == 5
     assert result["reflections_updated"] == 2

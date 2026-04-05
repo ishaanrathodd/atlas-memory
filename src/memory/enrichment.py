@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Sequence
 
-from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, Pattern, PatternType, Reflection, ReflectionStatus, Session, SessionHandoff, TimelineEvent
+from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, MemoryCase, Pattern, PatternType, Reflection, ReflectionStatus, Session, SessionHandoff, TimelineEvent
 from memory.retrieval_planner import RetrievalSignals, build_retrieval_plan, rerank_items_first_pass
 from memory.transport import (
     MemoryTransport,
@@ -845,6 +845,7 @@ class EnrichmentPayload:
     commitments: list[Commitment]
     corrections: list[Correction]
     timeline_events: list[TimelineEvent]
+    memory_cases: list[MemoryCase]
     decision_outcomes: list[DecisionOutcome]
     patterns: list[Pattern]
     reflections: list[Reflection]
@@ -883,6 +884,7 @@ class EnrichmentPayload:
             _format_proactive_coach(self.proactive_coach_lines),
             _format_commitments(self.commitments),
             _format_timeline_events(self.timeline_events),
+            _format_memory_cases(self.memory_cases),
             _format_decision_outcomes(self.decision_outcomes),
             _format_patterns(self.patterns),
             _format_reflections(self.reflections),
@@ -988,6 +990,20 @@ def _format_timeline_events(events: list[TimelineEvent]) -> str:
             f"- {event.event_time.isoformat()} [{label}] {_clean_timeline_summary(event)}"
         )
     return "Recent major events:\n" + "\n".join(lines)
+
+
+def _format_memory_cases(cases: list[MemoryCase]) -> str:
+    if not cases:
+        return ""
+
+    lines = []
+    for case in cases:
+        title = _normalize_text(case.title or case.problem_statement, max_length=120)
+        resolution = _normalize_text(case.resolution_summary or "No resolution summary yet.", max_length=180)
+        lines.append(
+            f"- [{case.outcome_status.value}] {title} -> {resolution}"
+        )
+    return "Analogous past cases:\n" + "\n".join(lines)
 
 
 def _format_decision_outcomes(outcomes: list[DecisionOutcome]) -> str:
@@ -1879,6 +1895,7 @@ def _build_retrieval_evidence_lines(
     active_state_inspection_query: bool,
     facts: list[Fact],
     timeline_events: list[TimelineEvent],
+    memory_cases: list[MemoryCase],
     decision_outcomes: list[DecisionOutcome],
     patterns: list[Pattern],
     reflections: list[Reflection],
@@ -1892,6 +1909,7 @@ def _build_retrieval_evidence_lines(
         f"episodes={len(relevant_episodes)}",
         f"facts={len(facts)}",
         f"timeline={len(timeline_events)}",
+        f"cases={len(memory_cases)}",
         f"outcomes={len(decision_outcomes)}",
         f"patterns={len(patterns)}",
         f"reflections={len(reflections)}",
@@ -2147,6 +2165,19 @@ async def collect_enrichment_payload(
     corrections_task = transport.list_corrections(limit=12, agent_namespace=agent_namespace, active_only=True)
     timeline_task = transport.list_timeline_events(limit=retrieval_plan.timeline_fetch_limit, agent_namespace=agent_namespace)
     outcomes_task = transport.list_decision_outcomes(limit=24, agent_namespace=agent_namespace)
+    list_memory_cases = getattr(transport, "list_memory_cases", None)
+    if callable(list_memory_cases):
+        memory_cases_task = list_memory_cases(
+            limit=24,
+            agent_namespace=agent_namespace,
+            outcome_statuses=[
+                DecisionOutcomeStatus.SUCCESS.value,
+                DecisionOutcomeStatus.FAILURE.value,
+                DecisionOutcomeStatus.MIXED.value,
+            ],
+        )
+    else:
+        memory_cases_task = asyncio.sleep(0, result=[])
     patterns_task = transport.list_patterns(limit=24, agent_namespace=agent_namespace)
     reflections_task = transport.list_reflections(
         limit=24,
@@ -2174,13 +2205,14 @@ async def collect_enrichment_payload(
     )
 
     if session_task is None:
-        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, reflections, active_state_records, session_handoffs, relevant_episodes, recent_episodes = await asyncio.gather(
+        facts, directives, commitments, corrections, timeline_events, decision_outcomes, memory_cases, patterns, reflections, active_state_records, session_handoffs, relevant_episodes, recent_episodes = await asyncio.gather(
             facts_task,
             directives_task,
             commitments_task,
             corrections_task,
             timeline_task,
             outcomes_task,
+            memory_cases_task,
             patterns_task,
             reflections_task,
             active_state_task,
@@ -2190,13 +2222,14 @@ async def collect_enrichment_payload(
         )
         active_session = None
     else:
-        facts, directives, commitments, corrections, timeline_events, decision_outcomes, patterns, reflections, active_state_records, session_handoffs, relevant_episodes, recent_episodes, active_session = await asyncio.gather(
+        facts, directives, commitments, corrections, timeline_events, decision_outcomes, memory_cases, patterns, reflections, active_state_records, session_handoffs, relevant_episodes, recent_episodes, active_session = await asyncio.gather(
             facts_task,
             directives_task,
             commitments_task,
             corrections_task,
             timeline_task,
             outcomes_task,
+            memory_cases_task,
             patterns_task,
             reflections_task,
             active_state_task,
@@ -2381,6 +2414,49 @@ async def collect_enrichment_payload(
     else:
         filtered_timeline_events = ranked_timeline_events[:MAX_TIMELINE_EVENTS_IN_CONTEXT]
 
+    if retrieval_plan.route_weight("analogous_case", default=0.0) > 0.0:
+        ranked_memory_cases = rerank_items_first_pass(
+            [
+                case
+                for case in memory_cases
+                if not _is_corrected_text(" ".join([case.problem_statement, case.resolution_summary or ""]), corrections)
+                if not _looks_like_reference_content(case.problem_statement)
+                if not _looks_like_operational_content(case.problem_statement)
+            ],
+            semantic_score=lambda case: ((float(case.impact_score) * 0.6) + (float(case.confidence) * 0.4)),
+            lexical_overlap=lambda case: _token_overlap_count(
+                query_tokens,
+                _tokenize(" ".join([case.problem_statement, case.resolution_summary or "", " ".join(case.tags)])),
+            ),
+            event_time=lambda case: case.last_observed_at,
+            semantic_weight=retrieval_plan.route_weight("analogous_case", default=0.0),
+            lexical_weight=retrieval_plan.route_weight("lexical", default=0.0),
+            temporal_weight=retrieval_plan.route_weight("temporal", default=0.0),
+        )
+        filtered_memory_cases = [
+            case
+            for case in ranked_memory_cases
+            if _token_overlap_count(
+                query_tokens,
+                _tokenize(" ".join([case.problem_statement, case.resolution_summary or "", " ".join(case.tags)])),
+            )
+            > 0
+        ][:3]
+    else:
+        filtered_memory_cases = []
+
+    case_outcome_ids = {
+        str(outcome_id)
+        for case in filtered_memory_cases
+        for outcome_id in case.source_outcome_ids
+    }
+    case_tags = {
+        str(tag).lower()
+        for case in filtered_memory_cases
+        for tag in case.tags
+        if str(tag).strip()
+    }
+
     ranked_decision_outcomes = sorted(
         [
             outcome
@@ -2396,6 +2472,8 @@ async def collect_enrichment_payload(
             if not _looks_like_operational_content(outcome.outcome)
         ],
         key=lambda outcome: (
+            (2.5 if outcome.id is not None and str(outcome.id) in case_outcome_ids else 0.0)
+            + (0.4 if case_tags.intersection({str(tag).lower() for tag in outcome.tags}) else 0.0),
             _decision_outcome_relevance_score(outcome, query_tokens),
             _sort_datetime(outcome.event_time),
         ),
@@ -2501,6 +2579,7 @@ async def collect_enrichment_payload(
     if exact_recall_query:
         ranked_facts = []
         filtered_timeline_events = []
+        filtered_memory_cases = []
         filtered_decision_outcomes = []
         filtered_patterns = []
         filtered_reflections = []
@@ -2549,6 +2628,7 @@ async def collect_enrichment_payload(
         active_state_inspection_query=active_state_inspection_query,
         facts=ranked_facts,
         timeline_events=filtered_timeline_events,
+        memory_cases=filtered_memory_cases,
         decision_outcomes=filtered_decision_outcomes,
         patterns=filtered_patterns,
         reflections=filtered_reflections,
@@ -2590,6 +2670,7 @@ async def collect_enrichment_payload(
         commitments=filtered_commitments,
         corrections=corrections,
         timeline_events=filtered_timeline_events,
+        memory_cases=filtered_memory_cases,
         decision_outcomes=filtered_decision_outcomes,
         patterns=filtered_patterns,
         reflections=filtered_reflections,

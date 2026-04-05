@@ -28,6 +28,7 @@ from memory.instance_identity import (
 )
 from memory.models import (
     ActiveState,
+    CaseEvidenceLink,
     Commitment,
     Correction,
     DecisionOutcome,
@@ -35,6 +36,7 @@ from memory.models import (
     Episode,
     Fact,
     FactHistory,
+    MemoryCase,
     Pattern,
     Reflection,
     SessionHandoff,
@@ -610,6 +612,31 @@ class MemoryTransport(Protocol):
         *,
         agent_namespace: str | None = None,
     ) -> bool: ...
+
+    async def upsert_memory_case(self, case: MemoryCase) -> MemoryCase: ...
+
+    async def list_memory_cases(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        outcome_statuses: list[str] | None = None,
+    ) -> list[MemoryCase]: ...
+
+    async def delete_memory_case(
+        self,
+        case_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool: ...
+
+    async def upsert_case_evidence_link(self, link: CaseEvidenceLink) -> CaseEvidenceLink: ...
+
+    async def list_case_evidence_links(
+        self,
+        case_id: str,
+        limit: int = 50,
+        agent_namespace: str | None = None,
+    ) -> list[CaseEvidenceLink]: ...
 
     async def upsert_reflection(self, reflection: Reflection) -> Reflection: ...
 
@@ -1707,6 +1734,198 @@ class SupabaseTransport:
             raise
         return True
 
+    async def upsert_memory_case(self, case: MemoryCase) -> MemoryCase:
+        payload = _ensure_payload_agent_namespace(_serialize_value(case.model_dump(exclude_none=True)))
+        case_key = str(payload.get("case_key") or "").strip()
+        if not case_key:
+            raise ValueError("MemoryCase.case_key is required.")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("memory_cases")
+                .select("*")
+                .eq("case_key", case_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "memory_cases"):
+                logger.info("Memory memory_cases table is not available yet; skipping memory case upsert.")
+                return case
+            raise
+
+        existing = _first_response_record(response)
+        if existing is not None:
+            payload.setdefault("updated_at", _now_utc().isoformat())
+            response, _ = await self._update_payload(
+                "memory_cases",
+                str(existing["id"]),
+                payload,
+                operation="upsert_memory_case",
+            )
+            if response is None:
+                refreshed = await self._fetch_row("memory_cases", str(existing["id"]))
+                if refreshed is None:
+                    raise LookupError("upsert_memory_case returned no rows.")
+                return MemoryCase.model_validate(_normalize_record(refreshed))
+            return MemoryCase.model_validate(_normalize_record(self._require_record(response, operation="upsert_memory_case")))
+
+        response, _ = await self._insert_payload("memory_cases", payload, operation="insert_memory_case")
+        return MemoryCase.model_validate(_normalize_record(self._require_record(response, operation="insert_memory_case")))
+
+    async def list_memory_cases(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        outcome_statuses: list[str] | None = None,
+    ) -> list[MemoryCase]:
+        requested_statuses = [str(status).strip() for status in (outcome_statuses or []) if str(status).strip()]
+
+        def _query() -> Any:
+            query = self._schema_client().table("memory_cases").select("*")
+            if requested_statuses:
+                query = query.in_("outcome_status", requested_statuses)
+            query = query.order("impact_score", desc=True).order("last_observed_at", desc=True).limit(max(limit * 4, 20))
+            return query.execute()
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "memory_cases"):
+                logger.info("Memory memory_cases table is not available yet; returning an empty memory case list.")
+                return []
+            raise
+
+        cases = [MemoryCase.model_validate(_normalize_record(item)) for item in _response_rows(response)]
+        cases = _filter_records_by_agent_namespace(cases, agent_namespace)
+        return cases[:limit]
+
+    async def delete_memory_case(
+        self,
+        case_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        normalized_key = str(case_key or "").strip()
+        if not normalized_key:
+            return False
+
+        def _delete() -> Any:
+            return (
+                self._schema_client()
+                .table("memory_cases")
+                .delete()
+                .eq("case_key", normalized_key)
+                .eq("agent_namespace", _resolved_agent_namespace(agent_namespace))
+                .execute()
+            )
+
+        try:
+            await self._run(_delete)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "memory_cases"):
+                logger.info("Memory memory_cases table is not available yet; skipping memory case delete.")
+                return False
+            raise
+        return True
+
+    async def upsert_case_evidence_link(self, link: CaseEvidenceLink) -> CaseEvidenceLink:
+        payload = _ensure_payload_agent_namespace(_serialize_value(link.model_dump(exclude_none=True)))
+        case_id = str(payload.get("case_id") or "").strip()
+        evidence_type = str(payload.get("evidence_type") or "").strip()
+        evidence_id = str(payload.get("evidence_id") or "").strip()
+        if not case_id or not evidence_type or not evidence_id:
+            raise ValueError("CaseEvidenceLink requires case_id, evidence_type, and evidence_id.")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("case_evidence_links")
+                .select("*")
+                .eq("case_id", case_id)
+                .eq("evidence_type", evidence_type)
+                .eq("evidence_id", evidence_id)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "case_evidence_links"):
+                logger.info("Memory case_evidence_links table is not available yet; skipping evidence-link upsert.")
+                return link
+            raise
+
+        existing = _first_response_record(response)
+        if existing is not None:
+            payload.setdefault("updated_at", _now_utc().isoformat())
+            response, _ = await self._update_payload(
+                "case_evidence_links",
+                str(existing["id"]),
+                payload,
+                operation="upsert_case_evidence_link",
+            )
+            if response is None:
+                refreshed = await self._fetch_row("case_evidence_links", str(existing["id"]))
+                if refreshed is None:
+                    raise LookupError("upsert_case_evidence_link returned no rows.")
+                return CaseEvidenceLink.model_validate(_normalize_record(refreshed))
+            return CaseEvidenceLink.model_validate(
+                _normalize_record(self._require_record(response, operation="upsert_case_evidence_link"))
+            )
+
+        response, _ = await self._insert_payload(
+            "case_evidence_links",
+            payload,
+            operation="insert_case_evidence_link",
+        )
+        return CaseEvidenceLink.model_validate(
+            _normalize_record(self._require_record(response, operation="insert_case_evidence_link"))
+        )
+
+    async def list_case_evidence_links(
+        self,
+        case_id: str,
+        limit: int = 50,
+        agent_namespace: str | None = None,
+    ) -> list[CaseEvidenceLink]:
+        normalized_case_id = str(case_id or "").strip()
+        if not normalized_case_id:
+            return []
+
+        def _query() -> Any:
+            query = (
+                self._schema_client()
+                .table("case_evidence_links")
+                .select("*")
+                .eq("case_id", normalized_case_id)
+                .order("relevance_score", desc=True)
+                .order("updated_at", desc=True)
+                .limit(max(limit * 2, 20))
+            )
+            return query.execute()
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "case_evidence_links"):
+                logger.info("Memory case_evidence_links table is not available yet; returning an empty link list.")
+                return []
+            raise
+
+        links = [CaseEvidenceLink.model_validate(_normalize_record(item)) for item in _response_rows(response)]
+        links = _filter_records_by_agent_namespace(links, agent_namespace)
+        return links[:limit]
+
     async def upsert_reflection(self, reflection: Reflection) -> Reflection:
         payload = _ensure_payload_agent_namespace(_serialize_value(reflection.model_dump(exclude_none=True)))
         reflection_key = str(payload.get("reflection_key") or "").strip()
@@ -2186,6 +2405,36 @@ class RemoteTransport:
         *,
         agent_namespace: str | None = None,
     ) -> bool:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def upsert_memory_case(self, case: MemoryCase) -> MemoryCase:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def list_memory_cases(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        outcome_statuses: list[str] | None = None,
+    ) -> list[MemoryCase]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def delete_memory_case(
+        self,
+        case_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def upsert_case_evidence_link(self, link: CaseEvidenceLink) -> CaseEvidenceLink:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def list_case_evidence_links(
+        self,
+        case_id: str,
+        limit: int = 50,
+        agent_namespace: str | None = None,
+    ) -> list[CaseEvidenceLink]:
         raise NotImplementedError("RemoteTransport is not implemented yet.")
 
     async def upsert_reflection(self, reflection: Reflection) -> Reflection:

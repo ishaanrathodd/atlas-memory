@@ -14,6 +14,7 @@ from memory.models import (
     ActiveState,
     ActiveStateKind,
     ActiveStateStatus,
+    CaseOutcomeStatus,
     Commitment,
     CommitmentKind,
     CommitmentStatus,
@@ -30,6 +31,7 @@ from memory.models import (
     EpisodeRole,
     Fact,
     FactCategory,
+    MemoryCase,
     Pattern,
     PatternType,
     Platform,
@@ -63,6 +65,7 @@ class MockTransport:
         self.active_state: list[object] = []
         self.directives: list[Directive] = []
         self.timeline_events: list[TimelineEvent] = []
+        self.memory_cases: list[MemoryCase] = []
         self.decision_outcomes: list[DecisionOutcome] = []
         self.patterns: list[Pattern] = []
         self.reflections: list[Reflection] = []
@@ -78,6 +81,8 @@ class MockTransport:
         self.last_list_corrections_namespace: str | None | object = "__unset__"
         self.last_list_timeline_namespace: str | None | object = "__unset__"
         self.last_list_timeline_limit: int | None = None
+        self.last_list_memory_cases_namespace: str | None | object = "__unset__"
+        self.last_list_memory_cases_statuses: list[str] | None = None
         self.last_list_handoffs_namespace: str | None | object = "__unset__"
 
     async def insert_session(self, session: Session) -> Session:
@@ -231,6 +236,27 @@ class MockTransport:
         self.last_list_timeline_namespace = agent_namespace
         events = sorted(self.timeline_events, key=lambda event: event.event_time, reverse=True)
         return events[:limit]
+
+    async def list_memory_cases(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        outcome_statuses: list[str] | None = None,
+    ) -> list[MemoryCase]:
+        self.last_list_memory_cases_namespace = agent_namespace
+        self.last_list_memory_cases_statuses = list(outcome_statuses or [])
+        cases = list(self.memory_cases)
+        if agent_namespace is not None:
+            cases = [
+                case
+                for case in cases
+                if case.agent_namespace == agent_namespace or (agent_namespace == "main" and case.agent_namespace is None)
+            ]
+        if outcome_statuses:
+            allowed = set(outcome_statuses)
+            cases = [case for case in cases if case.outcome_status.value in allowed]
+        cases.sort(key=lambda case: (case.impact_score, case.last_observed_at), reverse=True)
+        return cases[:limit]
 
     async def upsert_decision_outcome(self, outcome: DecisionOutcome):
         self.decision_outcomes = [existing for existing in self.decision_outcomes if existing.outcome_key != outcome.outcome_key]
@@ -469,6 +495,8 @@ async def test_collect_enrichment_payload_ranks_facts_and_limits_recent_episodes
     assert transport.last_search_facts_namespace == "main"
     assert transport.last_list_directives_namespace == "main"
     assert transport.last_list_timeline_namespace == "main"
+    assert transport.last_list_memory_cases_namespace == "main"
+    assert transport.last_list_memory_cases_statuses == ["success", "failure", "mixed"]
 
 
 @pytest.mark.asyncio
@@ -1694,6 +1722,63 @@ async def test_enrich_context_proactive_coach_warns_using_past_failures_and_wins
     assert "Past risk to avoid:" in context
     assert "Proven better path:" in context
     assert "Recurring trap signal:" in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_surfaces_analogous_memory_cases_for_advice_queries() -> None:
+    _, _, transport = _build_client_with_transport()
+    now = _utcnow()
+    linked_outcome_id = uuid4()
+
+    transport.decision_outcomes = [
+        DecisionOutcome(
+            id=linked_outcome_id,
+            agent_namespace="main",
+            kind=DecisionOutcomeKind.WORKFLOW,
+            title="checkout migration failure",
+            decision="Rushed checkout migration rollout without verification gates.",
+            outcome="Production regressions and rework consumed two days.",
+            lesson="Ship with replay-eval and CI regression gates before full rollout.",
+            outcome_key="auto:outcome:checkout-failure",
+            status=DecisionOutcomeStatus.FAILURE,
+            confidence=0.95,
+            importance_score=0.95,
+            event_time=now - timedelta(days=20),
+            tags=["checkout", "migration", "rollout"],
+        ),
+    ]
+    transport.memory_cases = [
+        MemoryCase(
+            id=uuid4(),
+            agent_namespace="main",
+            case_key="auto:case:checkout-rollout",
+            title="Checkout rollout without safety gates",
+            problem_statement="Checkout migration rollout moved too fast without verification gates.",
+            resolution_summary="Start with replay eval and canary gating before broad rollout.",
+            outcome_status=CaseOutcomeStatus.FAILURE,
+            confidence=0.88,
+            impact_score=0.9,
+            first_observed_at=now - timedelta(days=60),
+            last_observed_at=now - timedelta(days=10),
+            source_outcome_ids=[linked_outcome_id],
+            source_pattern_ids=[],
+            source_episode_ids=[],
+            tags=["checkout", "migration", "rollout", "verification"],
+            created_at=now - timedelta(days=10),
+            updated_at=now - timedelta(days=10),
+        )
+    ]
+
+    context = await enrich_context(
+        transport,
+        "I am working on checkout migration rollout right now, what should I do?",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Analogous past cases:" in context
+    assert "Checkout rollout without safety gates" in context
+    assert transport.last_list_memory_cases_namespace == "main"
 
 
 @pytest.mark.asyncio

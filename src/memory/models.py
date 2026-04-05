@@ -143,6 +143,22 @@ class DecisionOutcomeStatus(str, Enum):
     OPEN = "open"
 
 
+class CaseOutcomeStatus(str, Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+    MIXED = "mixed"
+    OPEN = "open"
+
+
+class CaseEvidenceType(str, Enum):
+    DECISION_OUTCOME = "decision_outcome"
+    PATTERN = "pattern"
+    EPISODE = "episode"
+    REFLECTION = "reflection"
+    TIMELINE_EVENT = "timeline_event"
+    FACT = "fact"
+
+
 class PatternType(str, Enum):
     STRENGTH = "strength"
     TRAP = "trap"
@@ -463,6 +479,43 @@ class Pattern(MemoryBaseModel):
     @classmethod
     def _coerce_null_pattern_lists(cls, v: Any) -> Any:
         return v if v is not None else []
+
+
+class MemoryCase(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    case_key: str
+    title: str | None = None
+    problem_statement: str
+    resolution_summary: str | None = None
+    outcome_status: CaseOutcomeStatus = CaseOutcomeStatus.OPEN
+    confidence: float = Field(default=0.72, ge=0.0, le=1.0)
+    impact_score: float = Field(default=0.6, ge=0.0)
+    first_observed_at: AwareDatetime
+    last_observed_at: AwareDatetime
+    source_outcome_ids: list[UUID] = Field(default_factory=list)
+    source_pattern_ids: list[UUID] = Field(default_factory=list)
+    source_episode_ids: list[UUID] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+
+    @field_validator("source_outcome_ids", "source_pattern_ids", "source_episode_ids", "tags", mode="before")
+    @classmethod
+    def _coerce_null_memory_case_lists(cls, v: Any) -> Any:
+        return v if v is not None else []
+
+
+class CaseEvidenceLink(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    case_id: UUID
+    evidence_type: CaseEvidenceType = CaseEvidenceType.DECISION_OUTCOME
+    evidence_id: UUID
+    relevance_score: float = Field(default=0.5, ge=0.0)
+    note: str | None = None
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
 
 
 class Reflection(MemoryBaseModel):

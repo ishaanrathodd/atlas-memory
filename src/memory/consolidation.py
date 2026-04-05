@@ -16,14 +16,20 @@ from memory.config import MemoryConfig
 from memory.fact_extraction import extract_and_store_facts
 from memory.models import (
     ActiveStateStatus,
+    CaseEvidenceLink,
+    CaseEvidenceType,
+    CaseOutcomeStatus,
     CommitmentStatus,
     CorrectionKind,
+    DecisionOutcome,
     DecisionOutcomeStatus,
     DirectiveStatus,
     Episode,
     EpisodeRole,
     Fact,
     FactCategory,
+    MemoryCase,
+    Pattern,
     PatternType,
     ReflectionStatus,
     Session,
@@ -65,6 +71,8 @@ PATTERNS_LOOKBACK_DAYS = 3650
 PATTERNS_SESSION_LIMIT = 96
 REFLECTIONS_LOOKBACK_DAYS = 3650
 REFLECTIONS_SESSION_LIMIT = 96
+CASE_MEMORY_LOOKBACK_DAYS = 3650
+CASE_MEMORY_SOURCE_LIMIT = 256
 _MANAGED_ACTIVE_STATE_KEYS = {
     "auto:project:primary",
     "auto:project:secondary",
@@ -1093,6 +1101,41 @@ def _timeline_event_key(session: Session) -> str:
 def _decision_outcome_key(session: Session) -> str:
     session_ref = str(session.id or session.legacy_session_id or session.started_at.isoformat())
     return _derived_memory_key("auto:decision-outcome", session_ref)
+
+
+def _memory_case_key(outcome: DecisionOutcome) -> str:
+    seed = str(outcome.outcome_key or outcome.id or "")
+    if not seed:
+        seed = "unknown-case"
+    return _derived_memory_key("auto:case", seed)
+
+
+def _memory_case_title(outcome: DecisionOutcome) -> str:
+    if outcome.title:
+        return _collapse_whitespace(outcome.title, max_length=90)
+    return _collapse_whitespace(outcome.decision, max_length=90)
+
+
+def _memory_case_resolution(outcome: DecisionOutcome) -> str:
+    if outcome.lesson:
+        return _collapse_whitespace(f"{outcome.outcome}. Lesson: {outcome.lesson}", max_length=260)
+    return _collapse_whitespace(outcome.outcome, max_length=260)
+
+
+def _memory_case_overlap_score(outcome: DecisionOutcome, pattern: Pattern) -> int:
+    outcome_tokens = set(
+        re.findall(
+            r"[a-z0-9]+",
+            " ".join([outcome.decision, outcome.outcome, " ".join(outcome.tags)]).lower(),
+        )
+    ) - _GROUNDING_STOPWORDS
+    pattern_tokens = set(
+        re.findall(
+            r"[a-z0-9]+",
+            " ".join([pattern.statement, pattern.description or "", " ".join(pattern.tags)]).lower(),
+        )
+    ) - _GROUNDING_STOPWORDS
+    return len(outcome_tokens.intersection(pattern_tokens))
 
 
 def _directive_kind(content: str) -> str:
@@ -2801,6 +2844,150 @@ async def refresh_decision_outcomes(
         "decision_outcomes_upserted": upserted,
         "decision_outcomes_pruned": pruned,
         "decision_outcome_count": len(visible_outcomes),
+    }
+
+
+async def refresh_memory_cases(
+    client: MemoryClient,
+    *,
+    lookback_days: int = CASE_MEMORY_LOOKBACK_DAYS,
+    now: datetime | None = None,
+    agent_namespace: str | None = None,
+) -> dict[str, Any]:
+    list_memory_cases = getattr(client.transport, "list_memory_cases", None)
+    upsert_memory_case = getattr(client.transport, "upsert_memory_case", None)
+    upsert_case_evidence_link = getattr(client.transport, "upsert_case_evidence_link", None)
+    delete_memory_case = getattr(client.transport, "delete_memory_case", None)
+
+    if not callable(list_memory_cases) or not callable(upsert_memory_case):
+        return {
+            "memory_cases_upserted": 0,
+            "memory_cases_pruned": 0,
+            "memory_case_count": 0,
+            "skipped": "transport-unsupported",
+        }
+
+    reference_time = now or _utcnow()
+    since = reference_time - timedelta(days=lookback_days)
+
+    existing_cases = await list_memory_cases(limit=512, agent_namespace=agent_namespace)
+    managed_existing_keys = {
+        case.case_key
+        for case in existing_cases
+        if str(case.case_key or "").startswith("auto:case:")
+    }
+
+    outcomes = await client.list_decision_outcomes(
+        limit=CASE_MEMORY_SOURCE_LIMIT,
+        agent_namespace=agent_namespace,
+        statuses=[
+            DecisionOutcomeStatus.SUCCESS.value,
+            DecisionOutcomeStatus.FAILURE.value,
+            DecisionOutcomeStatus.MIXED.value,
+        ],
+    )
+    patterns = await client.list_patterns(limit=CASE_MEMORY_SOURCE_LIMIT, agent_namespace=agent_namespace)
+
+    upserted = 0
+    managed_kept_keys: set[str] = set()
+
+    for outcome in outcomes:
+        if outcome.event_time < since:
+            continue
+        if float(outcome.confidence) < 0.55 or float(outcome.importance_score) < 0.5:
+            continue
+        if _looks_like_low_value_outcome_text(outcome.decision) or _looks_like_low_value_outcome_text(outcome.outcome):
+            continue
+
+        case_key = _memory_case_key(outcome)
+        managed_kept_keys.add(case_key)
+
+        related_patterns = sorted(
+            [pattern for pattern in patterns if _memory_case_overlap_score(outcome, pattern) > 0],
+            key=lambda pattern: (
+                _memory_case_overlap_score(outcome, pattern),
+                float(pattern.impact_score),
+                pattern.last_observed_at,
+            ),
+            reverse=True,
+        )[:3]
+
+        source_pattern_ids = [pattern.id for pattern in related_patterns if pattern.id is not None]
+        tags = sorted(
+            {
+                *[str(tag) for tag in outcome.tags],
+                *[str(tag) for pattern in related_patterns for tag in pattern.tags],
+                "derived",
+                "case-memory",
+                outcome.status.value,
+            }
+        )
+
+        case_record = await upsert_memory_case(
+            MemoryCase(
+                agent_namespace=agent_namespace,
+                case_key=case_key,
+                title=_memory_case_title(outcome),
+                problem_statement=_collapse_whitespace(outcome.decision, max_length=240),
+                resolution_summary=_memory_case_resolution(outcome),
+                outcome_status=CaseOutcomeStatus(outcome.status.value),
+                confidence=min(0.92, max(0.55, float(outcome.confidence))),
+                impact_score=min(1.0, max(0.5, float(outcome.importance_score))),
+                first_observed_at=outcome.event_time,
+                last_observed_at=outcome.event_time,
+                source_outcome_ids=[value for value in [outcome.id] if value is not None],
+                source_pattern_ids=[value for value in source_pattern_ids if value is not None],
+                source_episode_ids=[value for value in outcome.source_episode_ids if value is not None][:8],
+                tags=tags,
+                created_at=reference_time,
+                updated_at=reference_time,
+            )
+        )
+
+        if callable(upsert_case_evidence_link) and case_record.id is not None:
+            if outcome.id is not None:
+                await upsert_case_evidence_link(
+                    CaseEvidenceLink(
+                        agent_namespace=agent_namespace,
+                        case_id=case_record.id,
+                        evidence_type=CaseEvidenceType.DECISION_OUTCOME,
+                        evidence_id=outcome.id,
+                        relevance_score=0.95,
+                        note="primary outcome evidence",
+                        created_at=reference_time,
+                        updated_at=reference_time,
+                    )
+                )
+            for pattern in related_patterns:
+                if pattern.id is None:
+                    continue
+                await upsert_case_evidence_link(
+                    CaseEvidenceLink(
+                        agent_namespace=agent_namespace,
+                        case_id=case_record.id,
+                        evidence_type=CaseEvidenceType.PATTERN,
+                        evidence_id=pattern.id,
+                        relevance_score=min(0.9, 0.5 + (_memory_case_overlap_score(outcome, pattern) * 0.1)),
+                        note="supporting pattern evidence",
+                        created_at=reference_time,
+                        updated_at=reference_time,
+                    )
+                )
+
+        upserted += 1
+
+    pruned = 0
+    if callable(delete_memory_case):
+        for stale_key in sorted(managed_existing_keys - managed_kept_keys):
+            removed = await delete_memory_case(stale_key, agent_namespace=agent_namespace)
+            if removed:
+                pruned += 1
+
+    visible_cases = await list_memory_cases(limit=12, agent_namespace=agent_namespace)
+    return {
+        "memory_cases_upserted": upserted,
+        "memory_cases_pruned": pruned,
+        "memory_case_count": len(visible_cases),
     }
 
 

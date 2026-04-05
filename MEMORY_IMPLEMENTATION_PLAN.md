@@ -264,6 +264,7 @@ Important:
 - directive persistence hardening and de-overfitting
 - ingestion bloat guardrails (`user`/`assistant` only for durable episodes)
 - retrieval planner skeleton + first reranker pass (route-aware episode reranking)
+- case-memory schema + first compile/read path (tables, curation write path, retrieval integration)
 
 ### Active Workstreams
 
@@ -274,7 +275,7 @@ Important:
 
 2. Retrieval intelligence
 - reranker improvements (second pass + evaluation tuning)
-- case memory design
+- case memory quality tuning (ranking quality + pruning heuristics)
 
 3. Trust operations
 - forget / revoke / override UX
@@ -297,6 +298,11 @@ Important:
 - added planner regression tests and enrichment retrieval-limit assertions (`tests/test_retrieval_planner.py`, `tests/test_enrichment.py`)
 - schema decision: retrieval planner/reranker milestone introduced no schema or migration changes (retrieval-layer only)
 - validation: targeted planner+enrichment suite `39 passed`; atlas full suite `182 passed, 10 skipped`
+- added `2026-04-05_case_memory.sql` with `memory_cases` and `case_evidence_links` tables + indexes (agent-namespace safe, additive migration)
+- implemented `refresh_memory_cases` curation pass to compile durable cases from decision outcomes and attach evidence links to outcomes/patterns
+- integrated case-memory retrieval read path in enrichment (analogous-case route) and surfaced matched cases in context + ranking signals
+- schema decision: case-memory introduced additive tables only; no destructive schema or compatibility-view changes in this milestone
+- validation: targeted case-memory/enrichment/runtime suite `94 passed`; atlas full suite `184 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -364,7 +370,7 @@ Final Atlas is done when all are true:
 
 1. [ ] finalize provider productization (`hermes memory setup` UX and docs) — pending upstream-safe landing path
 2. [x] implement retrieval planner skeleton and first reranker pass
-3. [ ] define and migrate case-memory tables
+3. [x] define and migrate case-memory tables
 4. [ ] add long-horizon LLM eval suite (alongside deterministic replay)
 5. [ ] begin compatibility-view deprecation telemetry
 

@@ -20,6 +20,7 @@ from memory.consolidation import (
     refresh_corrections,
     refresh_decision_outcomes,
     refresh_directives,
+    refresh_memory_cases,
     refresh_patterns,
     refresh_reflections,
     refresh_timeline_events,
@@ -206,6 +207,11 @@ async def process_memory(
         min_message_count=min_message_count,
         agent_namespace=agent_namespace,
     )
+    memory_cases = await refresh_memory_cases(
+        client,
+        lookback_days=3650,
+        agent_namespace=agent_namespace,
+    )
     patterns = await refresh_patterns(
         client,
         lookback_days=3650,
@@ -238,6 +244,8 @@ async def process_memory(
         "timeline_event_count": int(timeline_events.get("timeline_event_count") or 0),
         "decision_outcomes_updated": int(decision_outcomes.get("decision_outcomes_upserted") or 0),
         "decision_outcome_count": int(decision_outcomes.get("decision_outcome_count") or 0),
+        "memory_cases_updated": int(memory_cases.get("memory_cases_upserted") or 0),
+        "memory_case_count": int(memory_cases.get("memory_case_count") or 0),
         "patterns_updated": int(patterns.get("patterns_upserted") or 0),
         "pattern_count": int(patterns.get("pattern_count") or 0),
         "reflections_updated": int(reflections.get("reflections_upserted") or 0),
