@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import base64
-import json
+import logging
 from datetime import datetime, timedelta, timezone
 import re
 from typing import Any
@@ -15,7 +14,7 @@ _SESSION_DAYS_BACK = 3650
 _LEGACY_SESSION_ID_RE = re.compile(r"^\d{8}_\d{6}_[A-Za-z0-9]+$")
 _MEMORY_LIVE_SESSION_NAMESPACE = uuid5(NAMESPACE_URL, "memory://hermes-live-session")
 _MAX_TITLE_LENGTH = 100
-_SESSION_COMPAT_TOPIC_PREFIX = "__hermes_meta__:"
+logger = logging.getLogger(__name__)
 
 
 def format_timestamp(ts: datetime | str | None) -> str:
@@ -113,30 +112,10 @@ def normalize_current_session_id(session_id: str | None) -> str | None:
     return None
 
 
-def _decode_session_compat_topics(topics: Any) -> dict[str, Any]:
-    if not isinstance(topics, list):
-        return {}
-    for item in topics:
-        if not isinstance(item, str) or not item.startswith(_SESSION_COMPAT_TOPIC_PREFIX):
-            continue
-        encoded = item[len(_SESSION_COMPAT_TOPIC_PREFIX) :]
-        try:
-            decoded = base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
-            payload = json.loads(decoded)
-        except Exception:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return {}
-
-
 def _session_payload(session: Any) -> dict[str, Any]:
-    compat = _decode_session_compat_topics(getattr(session, "topics", None))
     model_config = getattr(session, "session_model_config", None)
     if model_config is None:
         model_config = getattr(session, "model_config", None)
-    if model_config is None and isinstance(compat.get("model_config"), dict):
-        model_config = compat.get("model_config")
     if model_config is None:
         model_config = {}
     routing = {}
@@ -144,9 +123,9 @@ def _session_payload(session: Any) -> dict[str, Any]:
         raw_routing = model_config.get("routing")
         if isinstance(raw_routing, dict):
             routing = dict(raw_routing)
-    title = getattr(session, "title", None) or compat.get("title")
-    legacy_session_id = getattr(session, "legacy_session_id", None) or compat.get("legacy_session_id")
-    parent_session_id = getattr(session, "parent_session_id", None) or compat.get("parent_session_id")
+    title = getattr(session, "title", None)
+    legacy_session_id = getattr(session, "legacy_session_id", None)
+    parent_session_id = getattr(session, "parent_session_id", None)
     return {
         "session_id": str(session.id),
         "title": title,
@@ -158,14 +137,14 @@ def _session_payload(session: Any) -> dict[str, Any]:
             else session.started_at.isoformat()
         ),
         "ended_at": session.ended_at.isoformat() if session.ended_at else None,
-        "end_reason": getattr(session, "end_reason", None) or compat.get("end_reason"),
-        "model": getattr(session, "model", None) or compat.get("model"),
+        "end_reason": getattr(session, "end_reason", None),
+        "model": getattr(session, "model", None),
         "model_config": dict(model_config) if isinstance(model_config, dict) else {},
         "parent_session_id": str(parent_session_id or "") or None,
-        "billing_provider": getattr(session, "billing_provider", None) or compat.get("billing_provider"),
-        "billing_base_url": getattr(session, "billing_base_url", None) or compat.get("billing_base_url"),
-        "billing_mode": getattr(session, "billing_mode", None) or compat.get("billing_mode"),
-        "system_prompt_snapshot": getattr(session, "system_prompt_snapshot", None) or compat.get("system_prompt_snapshot"),
+        "billing_provider": getattr(session, "billing_provider", None),
+        "billing_base_url": getattr(session, "billing_base_url", None),
+        "billing_mode": getattr(session, "billing_mode", None),
+        "system_prompt_snapshot": getattr(session, "system_prompt_snapshot", None),
         "message_count": session.message_count,
         "summary": session.summary,
         "legacy_session_id": legacy_session_id,
@@ -271,6 +250,7 @@ async def resolve_session_reference(
         if session is not None and not _agent_namespace_matches(getattr(session, "agent_namespace", None), agent_namespace):
             session = None
     else:
+        logger.info("Memory compatibility telemetry: resolve_session_reference using legacy identifier path.")
         session = await client.transport.get_session_by_legacy_id(raw_reference)
         if session is not None and not _agent_namespace_matches(getattr(session, "agent_namespace", None), agent_namespace):
             session = None
@@ -279,12 +259,6 @@ async def resolve_session_reference(
             platform=normalize_platform_filter(platform),
             agent_namespace=agent_namespace,
         )
-        if session is None:
-            for candidate in recent_sessions:
-                payload = _session_payload(candidate)
-                if str(payload.get("legacy_session_id") or "").strip() == raw_reference:
-                    session = candidate
-                    break
         if session is None:
             matched_payload = _latest_numbered_title_match(raw_reference, recent_sessions)
             if matched_payload is not None:

@@ -303,6 +303,9 @@ Important:
 - integrated case-memory retrieval read path in enrichment (analogous-case route) and surfaced matched cases in context + ranking signals
 - schema decision: case-memory introduced additive tables only; no destructive schema or compatibility-view changes in this milestone
 - validation: targeted case-memory/enrichment/runtime suite `94 passed`; atlas full suite `184 passed, 10 skipped`
+- added compatibility cleanup migration `2026-04-05_compatibility_view_retirement.sql` to retire legacy views (`memory.active_facts`, `memory.fact_timeline`, `memory.recent_context`)
+- retired session-topic metadata compatibility fallback path; session payload now reads canonical session columns only
+- added cleanup telemetry logs for legacy session reference resolution and legacy session-id lookup path usage
 
 
 ## Evaluation and Quality Gates
@@ -372,7 +375,7 @@ Final Atlas is done when all are true:
 2. [x] implement retrieval planner skeleton and first reranker pass
 3. [x] define and migrate case-memory tables
 4. [ ] add long-horizon LLM eval suite (alongside deterministic replay)
-5. [ ] begin compatibility-view deprecation telemetry
+5. [x] begin compatibility-view deprecation telemetry
 
 
 ## Next Chat Continuation Protocol

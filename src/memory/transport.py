@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -412,8 +410,6 @@ _UNKNOWN_COLUMN_PATTERNS = (
     re.compile(r"record \"([^\"]+)\" has no field", re.IGNORECASE),
 )
 
-_SESSION_COMPAT_TOPIC_PREFIX = "__hermes_meta__:"
-
 
 def _extract_unknown_column(exc: Exception) -> str | None:
     message = str(exc)
@@ -425,34 +421,6 @@ def _extract_unknown_column(exc: Exception) -> str | None:
         if match:
             return match.group(1)
     return None
-
-
-def _decode_session_compat_topics(topics: list[Any] | None) -> dict[str, Any]:
-    if not isinstance(topics, list):
-        return {}
-    for item in topics:
-        if not isinstance(item, str) or not item.startswith(_SESSION_COMPAT_TOPIC_PREFIX):
-            continue
-        encoded = item[len(_SESSION_COMPAT_TOPIC_PREFIX) :]
-        try:
-            decoded = base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
-            payload = json.loads(decoded)
-        except Exception:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return {}
-
-
-def _encode_session_compat_topics(topics: list[Any] | None, metadata: dict[str, Any]) -> list[str]:
-    cleaned = [str(item) for item in (topics or []) if not str(item).startswith(_SESSION_COMPAT_TOPIC_PREFIX)]
-    if not metadata:
-        return cleaned
-    encoded = base64.urlsafe_b64encode(
-        json.dumps(_serialize_value(metadata), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    cleaned.append(_SESSION_COMPAT_TOPIC_PREFIX + encoded)
-    return cleaned
 
 
 def _explicit_agent_namespace(agent_namespace: str | None) -> str | None:
@@ -742,27 +710,6 @@ class SupabaseTransport:
     def _drop_unsupported_session_column(self, payload: dict[str, Any], exc: Exception, *, operation: str) -> bool:
         return self._drop_unsupported_column(payload, exc, table="sessions", operation=operation)
 
-    async def _merge_session_compat_metadata(
-        self,
-        session_id: str,
-        dropped: dict[str, Any],
-        *,
-        record: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        if not dropped:
-            return record
-        current = record or await self._fetch_row("sessions", session_id)
-        if current is None:
-            return record
-        existing_metadata = _decode_session_compat_topics(current.get("topics"))
-        merged_metadata = dict(existing_metadata)
-        merged_metadata.update(_serialize_value(dropped))
-        payload = {"topics": _encode_session_compat_topics(current.get("topics"), merged_metadata)}
-        response = await self._run(
-            lambda: self._schema_client().table("sessions").update(payload).eq("id", session_id).execute()
-        )
-        return self._require_record(response, operation="update_session_topics_compat")
-
     async def _insert_session_payload(self, payload: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
         working = _ensure_payload_agent_namespace(payload)
         dropped: dict[str, Any] = {}
@@ -902,9 +849,10 @@ class SupabaseTransport:
         record = self._require_record(response, operation="insert_session")
         record_id = str(record["id"])
         if dropped:
-            merged = await self._merge_session_compat_metadata(record_id, dropped, record=record)
-            if merged is not None:
-                record = merged
+            logger.info(
+                "Memory compatibility telemetry: dropped unsupported session columns during insert: %s",
+                sorted(dropped.keys()),
+            )
         if summary_embedding is not None:
             await self._write_vector_column("sessions", record_id, "summary_embedding", summary_embedding)
             refreshed = await self._fetch_row("sessions", record_id)
@@ -922,6 +870,7 @@ class SupabaseTransport:
         return Session.model_validate(_normalize_record(record))
 
     async def get_session_by_legacy_id(self, legacy_session_id: str) -> Session | None:
+        logger.info("Memory compatibility telemetry: legacy_session_id lookup attempted.")
         try:
             response = await self._run(
                 lambda: self._schema_client()
@@ -979,9 +928,10 @@ class SupabaseTransport:
             if response is not None:
                 record = self._require_record(response, operation="update_session")
         if dropped:
-            merged = await self._merge_session_compat_metadata(session_id, dropped, record=record)
-            if merged is not None:
-                record = merged
+            logger.info(
+                "Memory compatibility telemetry: dropped unsupported session columns during update: %s",
+                sorted(dropped.keys()),
+            )
         if "summary_embedding" in updates:
             await self._write_vector_column("sessions", session_id, "summary_embedding", summary_embedding)
             refreshed = await self._fetch_row("sessions", session_id)
