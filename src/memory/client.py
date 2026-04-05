@@ -951,6 +951,7 @@ class MemoryClient:
                 refresh_reflections,
                 refresh_timeline_events,
             )
+            summary_generation_enabled = str(os.getenv("MEMORY_ENABLE_SESSION_SUMMARIES", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
             warm_event_key = _warm_curator_event_key(session, message_count)
             if str(model_config.get("atlas_warm_curator_last_event_key") or "") == warm_event_key:
@@ -971,8 +972,10 @@ class MemoryClient:
                                 self,
                                 session_id,
                                 min_message_count=3,
+                                generate_summary=summary_generation_enabled,
                                 agent_namespace=agent_namespace,
                             )
+                            consolidation_result["summary_generation_enabled"] = summary_generation_enabled
                             result["session_consolidation"] = consolidation_result
                         except Exception as exc:
                             logger.warning("Warm live curator failed to consolidate current session: %s", exc)
@@ -985,10 +988,12 @@ class MemoryClient:
                                 self,
                                 lookback_hours=24 * 3650,
                                 min_message_count=3,
+                                generate_summaries=summary_generation_enabled,
                                 agent_namespace=agent_namespace,
                                 batch_limit=backlog_batch_limit,
                                 cursor_started_after=backlog_cursor,
                             )
+                            backlog_consolidation["summary_generation_enabled"] = summary_generation_enabled
                             result["backlog_consolidation"] = backlog_consolidation
                             model_config["atlas_warm_backlog_batch_limit"] = backlog_batch_limit
                             model_config["atlas_warm_backlog_last_run_at"] = now.isoformat()

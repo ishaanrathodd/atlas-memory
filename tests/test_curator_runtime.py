@@ -2190,7 +2190,7 @@ async def test_run_task_replay_eval_uses_harness(monkeypatch: pytest.MonkeyPatch
 async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client()
 
-    async def fake_consolidate(*args, **kwargs) -> dict[str, object]:
+    async def fake_extract(*args, **kwargs) -> dict[str, object]:
         return {
             "sessions_processed": 2,
             "facts_extracted": 5,
@@ -2228,7 +2228,7 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     async def fake_refresh_corrections(*args, **kwargs) -> dict[str, object]:
         return {"corrections_upserted": 1, "correction_count": 2}
 
-    monkeypatch.setattr(runtime, "consolidate_recent_sessions", fake_consolidate)
+    monkeypatch.setattr(runtime, "extract_facts_from_recent_sessions", fake_extract)
     monkeypatch.setattr(runtime, "collect_stats", fake_stats)
     monkeypatch.setattr(runtime, "refresh_active_state", fake_refresh)
     monkeypatch.setattr(runtime, "refresh_directives", fake_refresh_directives)
@@ -2244,7 +2244,9 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
 
     assert result["task"] == "process-memory"
     assert result["memory_processor"] is True
-    assert result["sessions_summarized"] == 2
+    assert result["summary_generation_enabled"] is False
+    assert result["sessions_processed"] == 2
+    assert result["sessions_summarized"] == 0
     assert result["facts_extracted"] == 5
     assert result["active_states_updated"] == 3
     assert result["active_states_staled"] == 1

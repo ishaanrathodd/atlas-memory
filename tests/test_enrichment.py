@@ -1681,6 +1681,53 @@ async def test_enrich_context_keeps_concise_identity_in_always_known_profile() -
 
 
 @pytest.mark.asyncio
+async def test_enrich_context_injects_explicit_always_on_identity_layer() -> None:
+    _, _, transport = _build_client_with_transport()
+    transport.facts = {
+        str(uuid4()): _make_fact(
+            "User is from a marwari family.",
+            category=FactCategory.IDENTITY,
+            tags=["identity"],
+            hours_ago=1,
+        ),
+        str(uuid4()): _make_fact(
+            "User prefers concise and direct replies.",
+            category=FactCategory.PREFERENCE,
+            tags=["communication", "preference"],
+            hours_ago=1,
+        ),
+    }
+    transport.directives = [
+        Directive(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=DirectiveKind.COMMUNICATION,
+            scope=DirectiveScope.GLOBAL,
+            title="Concise tone",
+            content="Always keep replies concise and direct.",
+            content_hash=uuid4().hex,
+            directive_key="auto:directive:concise",
+            status=DirectiveStatus.ACTIVE,
+            confidence=0.95,
+            priority_score=1.0,
+            last_observed_at=_utcnow(),
+        )
+    ]
+
+    context = await enrich_context(
+        transport,
+        "help me decide what to do next",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Always-on identity layer:" in context
+    assert "User is from a marwari family." in context
+    assert "User prefers concise and direct replies." in context
+    assert "Communication directive: Always keep replies concise and direct." in context
+
+
+@pytest.mark.asyncio
 async def test_enrich_context_proactive_coach_warns_using_past_failures_and_wins() -> None:
     _, _, transport = _build_client_with_transport()
     now = _utcnow()

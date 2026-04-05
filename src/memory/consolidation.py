@@ -1366,11 +1366,56 @@ def _clean_timeline_rollup_clause(sentence: str) -> str | None:
     return clause.rstrip(".")
 
 
-def _timeline_rollup_clauses(sessions: list[Session], *, limit: int = 3) -> list[str]:
+def _session_timeline_summary_from_episodes(episodes: list[Episode], *, max_clauses: int = 2) -> str | None:
+    ranked: list[tuple[int, datetime, str]] = []
+    seen_keys: set[str] = set()
+    for episode in episodes:
+        if episode.role not in {EpisodeRole.USER, EpisodeRole.ASSISTANT}:
+            continue
+        content = _collapse_whitespace(str(episode.content or ""), max_length=320)
+        if not content:
+            continue
+        if _looks_like_reference_content(content) or _looks_like_operational_content(content):
+            continue
+        for sentence in _split_summary_sentences(content):
+            cleaned_clause = _clean_timeline_rollup_clause(sentence)
+            if not cleaned_clause:
+                continue
+            if _looks_like_low_value_project_content(cleaned_clause) or _looks_like_low_value_state_text(cleaned_clause):
+                continue
+            key = re.sub(r"[^a-z0-9]+", " ", cleaned_clause.lower()).strip()
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            score = _timeline_clause_score(cleaned_clause)
+            if episode.role == EpisodeRole.USER:
+                score += 1
+            ranked.append((score, episode.message_timestamp, cleaned_clause))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    selected = [clause for _score, _ts, clause in ranked[:max_clauses]]
+    if not selected:
+        return None
+    summary = ". ".join(selected)
+    if not summary.endswith((".", "!", "?")):
+        summary += "."
+    return _collapse_whitespace(summary, max_length=320)
+
+
+def _timeline_rollup_clauses(
+    sessions: list[Session],
+    *,
+    session_summaries: dict[str, str] | None = None,
+    limit: int = 3,
+) -> list[str]:
     ranked: list[tuple[int, datetime, str]] = []
     seen_keys: set[str] = set()
     for session in sessions:
-        for sentence in _meaningful_summary_sentences(str(session.summary or "")):
+        summary_text = ""
+        if session.id is not None and session_summaries:
+            summary_text = session_summaries.get(str(session.id), "")
+        if not summary_text:
+            summary_text = str(session.summary or "")
+        for sentence in _meaningful_summary_sentences(summary_text):
             cleaned_clause = _clean_timeline_rollup_clause(sentence)
             if not cleaned_clause:
                 continue
@@ -1386,8 +1431,12 @@ def _timeline_rollup_clauses(sessions: list[Session], *, limit: int = 3) -> list
     return [clause for _score, _started_at, clause in ranked[:limit]]
 
 
-def _render_timeline_rollup_summary(sessions: list[Session]) -> str | None:
-    clauses = _timeline_rollup_clauses(sessions)
+def _render_timeline_rollup_summary(
+    sessions: list[Session],
+    *,
+    session_summaries: dict[str, str] | None = None,
+) -> str | None:
+    clauses = _timeline_rollup_clauses(sessions, session_summaries=session_summaries)
     if not clauses:
         return None
     summary = f"Across {len(sessions)} sessions: " + ". ".join(clauses)
@@ -2237,16 +2286,39 @@ def _session_priority_sentence(summary: str) -> str | None:
     return _session_focus_sentence(summary)
 
 
+def _episode_project_sentence(content: str) -> str | None:
+    candidate = _collapse_whitespace(content, max_length=240)
+    lowered = candidate.lower()
+    if not candidate:
+        return None
+    if lowered.startswith(("i want ", "we want ", "i need ", "we need ")):
+        return None
+    if candidate.endswith("?"):
+        return None
+    if _looks_like_reference_content(candidate) or _looks_like_operational_content(candidate):
+        return None
+    if _looks_like_low_value_project_content(candidate) or _looks_like_low_value_state_text(candidate):
+        return None
+    if any(marker in lowered for marker in _OPEN_LOOP_MARKERS):
+        return None
+    if any(marker in lowered for marker in ("building", "working on", "focused on", "designing", "migrating", "shipping", "launch")):
+        return candidate.rstrip(".")
+    cleaned = _clean_focus_clause(candidate)
+    if cleaned:
+        return cleaned
+    return None
+
+
 def _pick_project_focus_content(
     project_facts: list[Fact],
     sessions: list[Session],
+    recent_user_messages: list[Episode],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     primary: dict[str, Any] | None = None
     secondary: dict[str, Any] | None = None
 
-    for session in sessions:
-        summary = str(session.summary or "")
-        sentence = _session_project_sentence(summary)
+    for episode in recent_user_messages:
+        sentence = _episode_project_sentence(episode.content)
         if not sentence:
             continue
         primary = {
@@ -2254,15 +2326,36 @@ def _pick_project_focus_content(
             "state_key": "auto:project:primary",
             "title": "Primary focus",
             "content": sentence,
-            "confidence": 0.74,
+            "confidence": 0.78,
             "priority_score": 1.0,
-            "source_episode_ids": [],
-            "source_session_ids": [str(session.id)] if session.id is not None else [],
+            "source_episode_ids": [str(episode.id)] if episode.id is not None else [],
+            "source_session_ids": [str(episode.session_id)],
             "supporting_fact_ids": [],
-            "tags": ["derived", "session-backed", "project"],
-            "last_observed_at": _sort_recent(session.started_at),
+            "tags": ["derived", "episode-backed", "project"],
+            "last_observed_at": _sort_recent(episode.message_timestamp),
         }
         break
+
+    if primary is None:
+        for session in sessions:
+            summary = str(session.summary or "")
+            sentence = _session_project_sentence(summary)
+            if not sentence:
+                continue
+            primary = {
+                "kind": "project",
+                "state_key": "auto:project:primary",
+                "title": "Primary focus",
+                "content": sentence,
+                "confidence": 0.72,
+                "priority_score": 1.0,
+                "source_episode_ids": [],
+                "source_session_ids": [str(session.id)] if session.id is not None else [],
+                "supporting_fact_ids": [],
+                "tags": ["derived", "session-backed", "project"],
+                "last_observed_at": _sort_recent(session.started_at),
+            }
+            break
 
     for fact in project_facts:
         content = _collapse_whitespace(fact.content)
@@ -2296,16 +2389,10 @@ def _pick_priority_content(
     sessions: list[Session],
     recent_user_messages: list[Episode],
 ) -> tuple[str | None, list[str], list[str]]:
-    for session in sessions:
-        if session.summary:
-            candidate = _session_priority_sentence(str(session.summary or ""))
-            if candidate and not _looks_like_low_value_state_text(candidate):
-                return candidate, [], [str(session.id)] if session.id is not None else []
-    if recent_user_messages:
-        episode = recent_user_messages[0]
-        candidate = _collapse_whitespace(episode.content)
-        if not _looks_like_low_value_state_text(candidate):
-            return candidate, [], []
+    for episode in recent_user_messages:
+        candidate = _episode_project_sentence(episode.content)
+        if candidate and not _looks_like_low_value_state_text(candidate):
+            return candidate, [], [str(episode.session_id)]
     if goal_facts:
         fact = goal_facts[0]
         candidate = _collapse_whitespace(fact.content)
@@ -2316,6 +2403,11 @@ def _pick_priority_content(
         candidate = _collapse_whitespace(fact.content)
         if not _looks_like_low_value_project_content(candidate):
             return candidate, [str(fact.id)] if fact.id is not None else [], []
+    for session in sessions:
+        if session.summary:
+            candidate = _session_priority_sentence(str(session.summary or ""))
+            if candidate and not _looks_like_low_value_state_text(candidate):
+                return candidate, [], [str(session.id)] if session.id is not None else []
     return None, [], []
 
 
@@ -2348,7 +2440,7 @@ async def refresh_active_state(
     *,
     lookback_hours: int = ACTIVE_STATE_LOOKBACK_HOURS,
     min_message_count: int = 2,
-    include_unsummarized: bool = False,
+    include_unsummarized: bool = True,
     now: datetime | None = None,
     agent_namespace: str | None = None,
 ) -> dict[str, Any]:
@@ -2426,7 +2518,7 @@ async def refresh_active_state(
     )
 
     desired_states: list[dict[str, Any]] = []
-    primary_project, secondary_project = _pick_project_focus_content(project_facts, recent_sessions)
+    primary_project, secondary_project = _pick_project_focus_content(project_facts, recent_sessions, recent_user_messages)
     if primary_project:
         if not primary_project["source_session_ids"]:
             primary_project["source_session_ids"] = list(source_session_ids[:2])
@@ -2689,16 +2781,27 @@ async def refresh_timeline_events(
     )
     sessions = sorted(sessions, key=lambda session: session.started_at, reverse=True)[:TIMELINE_EVENT_SESSION_LIMIT]
     episodes_by_session: dict[str, list[Episode]] = {}
+    session_summaries: dict[str, str] = {}
     meaningful_sessions: list[Session] = []
 
     upserted = 0
     for session in sessions:
-        summary = _collapse_whitespace(str(session.summary or ""), max_length=320)
+        session_id = str(session.id)
+        episodes = await _list_session_episodes(client, session_id)
+        episodes_by_session[session_id] = episodes
+
+        summary = _session_timeline_summary_from_episodes(episodes)
+        if not summary:
+            summary = _collapse_whitespace(str(session.summary or ""), max_length=320)
         if not summary:
             continue
         if _looks_like_reference_content(summary) or _looks_like_operational_content(summary):
             continue
+        if _looks_like_low_value_project_content(summary) or _looks_like_low_value_state_text(summary):
+            continue
         meaningful_sessions.append(session)
+        if session.id is not None:
+            session_summaries[str(session.id)] = summary
         title = session.title or f"{session.platform.value} session"
         importance = 0.55
         if session.message_count >= 20:
@@ -2717,7 +2820,6 @@ async def refresh_timeline_events(
             agent_namespace=agent_namespace,
         )
         upserted += 1
-        episodes_by_session[str(session.id)] = await _list_session_episodes(client, str(session.id))
 
     sessions_by_day: dict[str, list[Session]] = {}
     sessions_by_week: dict[str, list[Session]] = {}
@@ -2729,7 +2831,7 @@ async def refresh_timeline_events(
         grouped_sessions = sorted(grouped_sessions, key=lambda item: item.started_at)
         if not _should_emit_day_rollup(grouped_sessions):
             continue
-        summary = _render_timeline_rollup_summary(grouped_sessions)
+        summary = _render_timeline_rollup_summary(grouped_sessions, session_summaries=session_summaries)
         if not summary:
             continue
         await client.add_timeline_event(
@@ -2749,7 +2851,7 @@ async def refresh_timeline_events(
         grouped_sessions = sorted(grouped_sessions, key=lambda item: item.started_at)
         if not _should_emit_week_rollup(grouped_sessions):
             continue
-        summary = _render_timeline_rollup_summary(grouped_sessions)
+        summary = _render_timeline_rollup_summary(grouped_sessions, session_summaries=session_summaries)
         if not summary:
             continue
         await client.add_timeline_event(
@@ -3551,6 +3653,7 @@ async def consolidate_session_if_needed(
     llm_api_key: str | None = None,
     llm_base_url: str | None = None,
     llm_model: str | None = None,
+    generate_summary: bool = True,
     agent_namespace: str | None = None,
 ) -> dict[str, Any]:
     reference_time = now or _utcnow()
@@ -3580,7 +3683,7 @@ async def consolidate_session_if_needed(
             return stats
 
         summary = session.summary
-        if not summary:
+        if generate_summary and not summary:
             summary = await _run_with_retries(
                 lambda: summarize_session_with_llm(
                     episodes,
@@ -3630,6 +3733,7 @@ async def consolidate_recent_sessions(
     llm_api_key: str | None = None,
     llm_base_url: str | None = None,
     llm_model: str | None = None,
+    generate_summaries: bool = True,
     agent_namespace: str | None = None,
     batch_limit: int | None = None,
     cursor_started_after: datetime | str | None = None,
@@ -3649,12 +3753,25 @@ async def consolidate_recent_sessions(
         "backlog_cursor_wrapped": False,
     }
 
-    sessions = await _list_recent_unsummarized_sessions(
-        client,
-        since=since,
-        min_message_count=min_message_count,
-        agent_namespace=agent_namespace,
-    )
+    if generate_summaries:
+        sessions = await _list_recent_unsummarized_sessions(
+            client,
+            since=since,
+            min_message_count=min_message_count,
+            agent_namespace=agent_namespace,
+        )
+    else:
+        sessions = await _list_recent_candidate_sessions(
+            client,
+            since=since,
+            limit=max(TIMELINE_EVENT_SESSION_LIMIT * 4, 128),
+            agent_namespace=agent_namespace,
+        )
+        sessions = [
+            session
+            for session in sessions
+            if int(session.message_count or 0) >= min_message_count
+        ]
     stats["backlog_total_unsummarized"] = len(sessions)
 
     ordered_sessions = list(sessions)
@@ -3682,6 +3799,7 @@ async def consolidate_recent_sessions(
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
             llm_model=llm_model,
+            generate_summary=generate_summaries,
             agent_namespace=agent_namespace,
         )
         if result.get("session_processed"):

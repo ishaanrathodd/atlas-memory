@@ -16,7 +16,7 @@ It answers:
 ## Last Updated
 
 - Date: `2026-04-05`
-- Repository status: `green` (`178 passed, 10 skipped`)
+- Repository status: `green` (`189 passed, 10 skipped`)
 
 
 ## Executive Summary
@@ -46,6 +46,7 @@ The next moat is not adding niche fields. The moat is retrieval intelligence:
 - `agent_namespace` isolation across memory records
 - `active_state` compilation and bootstrap injection
 - `directives` extraction + standing-rule injection
+- explicit `always-on identity layer` in enrichment context (identity + communication preference lines are always injected)
 - `timeline_events` with session/day/week summaries
 - `commitments` and `corrections` with suppression behavior
 - `decision_outcomes` with conservative grounding
@@ -64,6 +65,8 @@ The next moat is not adding niche fields. The moat is retrieval intelligence:
 - false directive superseding reduced (scan-window guard)
 - single-message persistence now enforces `user`/`assistant` roles only
 - batch persistence already enforces `user`/`assistant` roles only
+- process-memory now defaults to episode-level feature extraction (summaries are optional)
+- active-state focus/priority and timeline session/day/week rollups now derive from episode evidence first, with session-summary fallback only
 
 ### Important Behavior Guarantees
 
@@ -306,6 +309,14 @@ Important:
 - added compatibility cleanup migration `2026-04-05_compatibility_view_retirement.sql` to retire legacy views (`memory.active_facts`, `memory.fact_timeline`, `memory.recent_context`)
 - retired session-topic metadata compatibility fallback path; session payload now reads canonical session columns only
 - added cleanup telemetry logs for legacy session reference resolution and legacy session-id lookup path usage
+- implemented explicit always-on identity assembly in enrichment:
+  - deterministic identity slot handling (name/religion/origin/location/work)
+  - always-on preference/directive injection for communication style continuity
+- switched `process-memory` default behavior to episode-first feature extraction (`extract-facts`) and made session summarization opt-in via `MEMORY_ENABLE_SESSION_SUMMARIES`
+- aligned warm live-curator session/backlog consolidation with the same summary gate (`MEMORY_ENABLE_SESSION_SUMMARIES`) so LLM summaries are optional in continuity refresh loops
+- updated active-state curation to prefer episode-derived focus/priority signals and include unsummarized sessions by default
+- updated timeline event generation to build session/day/week summaries from episode content first (summary column as fallback)
+- validation: targeted client+enrichment+curator runtime suite `118 passed`; atlas full suite `189 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -374,8 +385,10 @@ Final Atlas is done when all are true:
 1. [ ] finalize provider productization (`hermes memory setup` UX and docs) — pending upstream-safe landing path
 2. [x] implement retrieval planner skeleton and first reranker pass
 3. [x] define and migrate case-memory tables
-4. [ ] add long-horizon LLM eval suite (alongside deterministic replay)
-5. [x] begin compatibility-view deprecation telemetry
+4. [x] make episode-first feature extraction the default memory processor path
+5. [x] add explicit always-on identity layer in enrichment context
+6. [ ] add long-horizon LLM eval suite (alongside deterministic replay)
+7. [ ] complete canonical identity conflict-resolution lifecycle (confirm/supersede/revoke semantics)
 
 
 ## Next Chat Continuation Protocol

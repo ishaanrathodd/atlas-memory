@@ -163,21 +163,35 @@ async def process_memory(
     min_message_count: int,
 ) -> dict[str, Any]:
     agent_namespace = get_agent_namespace()
-    llm_api_key = os.getenv("GLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-    llm_base_url = os.getenv("GLM_BASE_URL") or os.getenv("MEMORY_OPENAI_BASE_URL")
+    summary_generation_enabled = str(os.getenv("MEMORY_ENABLE_SESSION_SUMMARIES", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    if summary_generation_enabled:
+        llm_api_key = os.getenv("GLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+        llm_base_url = os.getenv("GLM_BASE_URL") or os.getenv("MEMORY_OPENAI_BASE_URL")
+        fact_pipeline = await consolidate_recent_sessions(
+            client,
+            lookback_hours=lookback_hours,
+            min_message_count=min_message_count,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            agent_namespace=agent_namespace,
+        )
+    else:
+        fact_pipeline = await extract_facts_from_recent_sessions(
+            client,
+            lookback_hours=lookback_hours,
+            min_message_count=min_message_count,
+            agent_namespace=agent_namespace,
+        )
 
-    consolidation = await consolidate_recent_sessions(
-        client,
-        lookback_hours=lookback_hours,
-        min_message_count=min_message_count,
-        llm_api_key=llm_api_key,
-        llm_base_url=llm_base_url,
-        agent_namespace=agent_namespace,
-    )
+    sessions_processed = int(fact_pipeline.get("sessions_processed") or 0)
+    facts_extracted = int(fact_pipeline.get("facts_extracted") or 0)
+    sessions_summarized = sessions_processed if summary_generation_enabled else 0
+
     active_state = await refresh_active_state(
         client,
         lookback_hours=max(lookback_hours, 72),
         min_message_count=min_message_count,
+        include_unsummarized=True,
         agent_namespace=agent_namespace,
     )
     directives = await refresh_directives(
@@ -230,8 +244,10 @@ async def process_memory(
         "task": "process-memory",
         "agent_namespace": agent_namespace,
         "memory_processor": True,
-        "sessions_summarized": int(consolidation.get("sessions_processed") or 0),
-        "facts_extracted": int(consolidation.get("facts_extracted") or 0),
+        "summary_generation_enabled": summary_generation_enabled,
+        "sessions_processed": sessions_processed,
+        "sessions_summarized": sessions_summarized,
+        "facts_extracted": facts_extracted,
         "active_states_updated": int(active_state.get("states_upserted") or 0),
         "active_states_staled": int(active_state.get("states_staled") or 0),
         "directives_updated": int(directives.get("directives_upserted") or 0),
@@ -250,12 +266,12 @@ async def process_memory(
         "pattern_count": int(patterns.get("pattern_count") or 0),
         "reflections_updated": int(reflections.get("reflections_upserted") or 0),
         "reflection_count": int(reflections.get("reflection_count") or 0),
-        "errors": int(consolidation.get("errors") or 0),
-        "error_details": list(consolidation.get("error_details") or []),
+        "errors": int(fact_pipeline.get("errors") or 0),
+        "error_details": list(fact_pipeline.get("error_details") or []),
         "stats": stats,
         "message": (
             "Memory processor completed."
-            if int(consolidation.get("sessions_processed") or 0) > 0
+            if sessions_processed > 0
             else "No new sessions needed memory processing."
         ),
     }

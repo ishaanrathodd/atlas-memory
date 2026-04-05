@@ -17,6 +17,7 @@ from memory.transport import (
 
 MAX_FACTS_IN_CONTEXT = 10
 MAX_CORE_PROFILE_FACTS = 6
+MAX_ALWAYS_ON_IDENTITY_LINES = 8
 MAX_RELEVANT_EPISODES = 6
 MAX_RECENT_EPISODES = 3
 MAX_EXACT_RECENT_EPISODES = 24
@@ -140,6 +141,15 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\s*;\s*")
 _WEEK_QUERY_RE = re.compile(r"(?:\bweek\s+(?P<prefix_week>\d{1,2})\b)|(?:\b(?P<suffix_week>\d{1,2})(?:st|nd|rd|th)?\s+week\b)", re.IGNORECASE)
 _YEAR_QUERY_RE = re.compile(r"\b(20\d{2})\b")
 _WEEK_TITLE_DATE_RE = re.compile(r"week of\s+(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+_ALWAYS_ON_DIRECTIVE_HINTS = (
+    "prefer",
+    "always",
+    "never",
+    "tone",
+    "style",
+    "language",
+    "wording",
+)
 
 
 def _normalize_text(value: str, *, max_length: int = 240) -> str:
@@ -850,6 +860,7 @@ class EnrichmentPayload:
     patterns: list[Pattern]
     reflections: list[Reflection]
     active_state_lines: list[str]
+    always_on_identity_lines: list[str]
     core_profile_lines: list[str]
     life_trajectory_lines: list[str]
     proactive_coach_lines: list[str]
@@ -878,6 +889,7 @@ class EnrichmentPayload:
             _format_trust_ledger(self.trust_ledger_lines),
             _format_verbatim_evidence(self.verbatim_evidence_lines),
             _format_quote_coverage(self.quote_coverage_lines),
+            _format_always_on_identity(self.always_on_identity_lines),
             _format_directives(self.directives),
             _format_core_profile(self.core_profile_lines),
             _format_life_trajectory(self.life_trajectory_lines),
@@ -925,6 +937,12 @@ def _format_core_profile(lines: list[str]) -> str:
     if not lines:
         return "Always-known user profile:\n- Core profile is still sparse; keep learning durable identity, work, and life trajectory facts."
     return "Always-known user profile:\n" + "\n".join(f"- {_normalize_text(line, max_length=320)}" for line in lines)
+
+
+def _format_always_on_identity(lines: list[str]) -> str:
+    if not lines:
+        return "Always-on identity layer:\n- Identity is still sparse; keep extracting durable identity and communication preferences from episodes."
+    return "Always-on identity layer:\n" + "\n".join(f"- {_normalize_text(line, max_length=320)}" for line in lines)
 
 
 def _format_life_trajectory(lines: list[str]) -> str:
@@ -1727,6 +1745,100 @@ def _extract_requested_iso_week(value: str) -> tuple[int, int] | None:
     if year_match:
         year = int(year_match.group(1))
     return year, week
+
+
+def _identity_slot_key(content: str) -> tuple[int, str]:
+    lowered = content.lower()
+    if lowered.startswith("user's name is"):
+        return (0, "name")
+    if lowered.startswith("user's religion is"):
+        return (1, "religion")
+    if lowered.startswith("user is from"):
+        return (2, "origin")
+    if lowered.startswith("user lives in"):
+        return (3, "location")
+    if lowered.startswith("user works as"):
+        return (4, "role")
+    if lowered.startswith("user works at"):
+        return (5, "employer")
+    if lowered.startswith("user is"):
+        return (6, "identity")
+    return (7, "identity-other")
+
+
+def _always_on_fact_min_tokens(fact: Fact) -> int:
+    if fact.category is FactCategory.IDENTITY:
+        return 2
+    if fact.category is FactCategory.PREFERENCE:
+        return 3
+    if fact.category is FactCategory.RELATIONSHIP:
+        return 3
+    return 4
+
+
+def _build_always_on_identity_lines(
+    facts: list[Fact],
+    directives: list[Directive],
+) -> list[str]:
+    candidates = [
+        fact
+        for fact in facts
+        if fact.category in {FactCategory.IDENTITY, FactCategory.PREFERENCE, FactCategory.RELATIONSHIP}
+        if not _looks_like_low_quality_fact(fact)
+        if len(_tokenize(fact.content)) >= _always_on_fact_min_tokens(fact)
+    ]
+    ranked_facts = sorted(
+        candidates,
+        key=lambda fact: (
+            3.0 if fact.category is FactCategory.IDENTITY else 2.0 if fact.category is FactCategory.PREFERENCE else 1.0,
+            float(fact.confidence),
+            _sort_datetime(fact.updated_at or fact.created_at),
+        ),
+        reverse=True,
+    )
+
+    lines: list[str] = []
+    used_slots: set[str] = set()
+    seen_lines: set[str] = set()
+    for fact in ranked_facts:
+        cleaned = _clean_fact_content(fact)
+        slot_priority, slot = _identity_slot_key(cleaned)
+        if fact.category is FactCategory.IDENTITY and slot in used_slots:
+            continue
+        fingerprint = f"{slot_priority}:{slot}:{' '.join(cleaned.lower().split())}"
+        if fingerprint in seen_lines:
+            continue
+        seen_lines.add(fingerprint)
+        if fact.category is FactCategory.IDENTITY:
+            used_slots.add(slot)
+        lines.append(cleaned)
+        if len(lines) >= MAX_ALWAYS_ON_IDENTITY_LINES:
+            break
+
+    directive_lines: list[str] = []
+    for directive in sorted(
+        directives,
+        key=lambda item: (
+            float(item.priority_score),
+            _sort_datetime(item.last_observed_at or item.updated_at or item.created_at),
+        ),
+        reverse=True,
+    ):
+        if directive.kind.value not in {"communication", "memory", "behavior"}:
+            continue
+        lowered = directive.content.lower()
+        if not any(marker in lowered for marker in _ALWAYS_ON_DIRECTIVE_HINTS):
+            continue
+        rendered = f"Communication directive: {_normalize_text(directive.content, max_length=220)}"
+        normalized = " ".join(rendered.lower().split())
+        if normalized in seen_lines:
+            continue
+        seen_lines.add(normalized)
+        directive_lines.append(rendered)
+        if len(directive_lines) >= 2:
+            break
+
+    return (lines + directive_lines)[:MAX_ALWAYS_ON_IDENTITY_LINES]
 
 
 def _timeline_event_matches_iso_week(event: TimelineEvent, *, year: int, week: int) -> bool:
@@ -2573,6 +2685,7 @@ async def collect_enrichment_payload(
         if not _is_corrected_text(fact.content, corrections)
         if not _looks_like_low_quality_fact(fact)
     ]
+    always_on_identity_lines = _build_always_on_identity_lines(all_filtered_facts, directives)
     core_profile_lines = _build_core_profile_lines(all_filtered_facts, query_tokens=query_tokens)
     life_trajectory_lines = _build_life_trajectory_lines(filtered_timeline_events or ranked_timeline_events)
     proactive_coach_lines = (
@@ -2593,6 +2706,7 @@ async def collect_enrichment_payload(
         filtered_patterns = []
         filtered_reflections = []
         filtered_commitments = []
+        always_on_identity_lines = []
         core_profile_lines = []
         life_trajectory_lines = []
         proactive_coach_lines = []
@@ -2684,6 +2798,7 @@ async def collect_enrichment_payload(
         patterns=filtered_patterns,
         reflections=filtered_reflections,
         active_state_lines=active_state_lines,
+        always_on_identity_lines=always_on_identity_lines,
         core_profile_lines=core_profile_lines,
         life_trajectory_lines=life_trajectory_lines,
         proactive_coach_lines=proactive_coach_lines,
