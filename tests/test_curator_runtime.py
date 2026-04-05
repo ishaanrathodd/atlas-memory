@@ -2295,6 +2295,13 @@ def test_cli_parser_accepts_supported_tasks() -> None:
     diagnostics_args = parser.parse_args(["setup-diagnostics"])
     assert diagnostics_args.task == "setup-diagnostics"
 
+    setup_args = parser.parse_args(["setup"])
+    assert setup_args.task == "setup"
+    assert setup_args.no_auto_fix is False
+
+    setup_no_fix_args = parser.parse_args(["setup", "--no-auto-fix"])
+    assert setup_no_fix_args.no_auto_fix is True
+
 
 def test_runtime_main_dispatches_task_and_prints_json(
     monkeypatch: pytest.MonkeyPatch,
@@ -2313,6 +2320,7 @@ def test_runtime_main_dispatches_task_and_prints_json(
         judge_enforce: bool | None = None,
         judge_model: str | None = None,
         judge_sample_limit: int | None = None,
+        auto_fix: bool = True,
         state_db_path: str | Path | None = None,
         source: str | None = None,
         from_date: str | None = None,
@@ -2325,6 +2333,7 @@ def test_runtime_main_dispatches_task_and_prints_json(
             judge_enforce,
             judge_model,
             judge_sample_limit,
+            auto_fix,
             state_db_path,
             source,
             from_date,
@@ -2385,6 +2394,112 @@ async def test_run_task_setup_diagnostics_reports_failures_and_warnings(
     assert checks["supabase_key"]["status"] == "fail"
     assert checks["atlas_runtime_import"]["status"] == "fail"
     assert checks["embedding_key"]["status"] == "warn"
+
+
+@pytest.mark.asyncio
+async def test_run_task_setup_creates_default_files_and_reports_next_steps(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+
+    monkeypatch.delenv("MEMORY_SUPABASE_KEY", raising=False)
+    monkeypatch.delenv("MEMORY_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = await runtime.run_task(
+        "setup",
+        client=client,
+        hermes_home=tmp_path,
+        auto_fix=True,
+    )
+
+    assert result["task"] == "setup"
+    assert result["auto_fix"] is True
+    assert any(item["path"].endswith("/.env") for item in result["actions"])
+    assert any(item["path"].endswith("/atlas.json") for item in result["actions"])
+    assert (tmp_path / ".env").exists()
+    assert (tmp_path / "atlas.json").exists()
+    assert "diagnostics" in result
+    assert isinstance(result["next_steps"], list)
+
+
+@pytest.mark.asyncio
+async def test_run_task_setup_no_auto_fix_does_not_create_defaults(tmp_path: Path) -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+
+    result = await runtime.run_task(
+        "setup",
+        client=client,
+        hermes_home=tmp_path,
+        auto_fix=False,
+    )
+
+    assert result["task"] == "setup"
+    assert result["auto_fix"] is False
+    assert result["actions"] == []
+    assert not (tmp_path / ".env").exists()
+    assert not (tmp_path / "atlas.json").exists()
+
+
+def test_read_hermes_default_llm_from_config_yaml(tmp_path: Path) -> None:
+    (tmp_path / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  default: gpt-5.3-codex\n",
+        encoding="utf-8",
+    )
+
+    assert runtime._read_hermes_default_llm(tmp_path) == "gpt-5.3-codex"
+
+
+@pytest.mark.asyncio
+async def test_run_task_setup_interactive_collects_minimal_required_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+
+    (tmp_path / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  default: gpt-5.3-codex\n",
+        encoding="utf-8",
+    )
+
+    prompt_values = iter([
+        "https://example-project.supabase.co",  # Supabase URL
+        "gpt-5.3-codex",  # LLM model choice
+    ])
+    secret_values = iter([
+        "supabase-service-role-key-1234567890",  # service key
+        "openai-api-key-abcdef",  # embedding key
+    ])
+
+    monkeypatch.setattr("builtins.input", lambda *_args, **_kwargs: next(prompt_values))
+    monkeypatch.setattr(runtime.getpass, "getpass", lambda *_args, **_kwargs: next(secret_values))
+    monkeypatch.setattr(runtime.sys.stdin, "isatty", lambda: True)
+
+    result = await runtime.run_task(
+        "setup",
+        client=client,
+        hermes_home=tmp_path,
+        auto_fix=True,
+    )
+
+    env_contents = (tmp_path / ".env").read_text(encoding="utf-8")
+    atlas_config = json.loads((tmp_path / "atlas.json").read_text(encoding="utf-8"))
+
+    assert result["task"] == "setup"
+    assert result["interactive"] is True
+    assert "MEMORY_SUPABASE_URL=https://example-project.supabase.co" in env_contents
+    assert "MEMORY_SUPABASE_KEY=supabase-service-role-key-1234567890" in env_contents
+    assert "MEMORY_OPENAI_API_KEY=openai-api-key-abcdef" in env_contents
+    assert "MEMORY_LLM_MODEL=gpt-5.3-codex" in env_contents
+    assert atlas_config.get("llm_model") == "gpt-5.3-codex"
 
 
 @pytest.mark.asyncio

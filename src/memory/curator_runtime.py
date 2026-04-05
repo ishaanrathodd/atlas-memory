@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime, timezone
+import getpass
 import importlib.util
 import json
 import os
@@ -38,6 +39,26 @@ DEFAULT_HERMES_HOME = Path.home() / ".hermes"
 DEFAULT_GLM_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 _ENV_ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+_DEFAULT_ATLAS_CONFIG = {
+    "supabase_schema": "memory",
+    "openai_base_url": "https://api.openai.com/v1",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimensions": 512,
+}
+
+_DEFAULT_ENV_TEMPLATE = """# Atlas memory setup defaults (non-secret)
+MEMORY_DEFAULT_PLATFORM=telegram
+MEMORY_OPENAI_BASE_URL=https://api.openai.com/v1
+
+# Required secrets/config (set these values):
+# MEMORY_SUPABASE_URL=https://<your-project>.supabase.co
+# MEMORY_SUPABASE_KEY=<supabase-service-role-key>
+
+# Optional (needed for embeddings):
+# MEMORY_OPENAI_API_KEY=<openai-api-key>
+# MEMORY_LLM_MODEL=<default-llm-model-from-hermes-config>
+"""
 
 
 def _log(message: str) -> None:
@@ -169,12 +190,14 @@ async def process_memory(
     if summary_generation_enabled:
         llm_api_key = os.getenv("GLM_API_KEY") or os.getenv("OPENAI_API_KEY")
         llm_base_url = os.getenv("GLM_BASE_URL") or os.getenv("MEMORY_OPENAI_BASE_URL")
+        llm_model = os.getenv("MEMORY_SUMMARY_MODEL") or os.getenv("MEMORY_LLM_MODEL") or os.getenv("LLM_MODEL")
         fact_pipeline = await consolidate_recent_sessions(
             client,
             lookback_hours=lookback_hours,
             min_message_count=min_message_count,
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
+            llm_model=llm_model,
             agent_namespace=agent_namespace,
         )
     else:
@@ -297,6 +320,131 @@ def _is_valid_http_url(value: str | None) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def _read_hermes_default_llm(root: Path) -> str | None:
+    config_path = root / "config.yaml"
+    if not config_path.exists():
+        return None
+    try:
+        lines = config_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return None
+
+    in_model_block = False
+    model_indent = 0
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+
+        if not in_model_block:
+            if stripped == "model:":
+                in_model_block = True
+                model_indent = indent
+                continue
+            if stripped.startswith("model:"):
+                inline_value = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+                if inline_value:
+                    return inline_value
+                continue
+
+        if in_model_block:
+            if indent <= model_indent and stripped.endswith(":"):
+                in_model_block = False
+                continue
+            if stripped.startswith("default:"):
+                value = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+                if value:
+                    return value
+
+    return None
+
+
+def _prompt_text(label: str, *, default: str | None = None) -> str | None:
+    suffix = f" [{default}]" if default else ""
+    try:
+        raw = input(f"{label}{suffix}: ")
+    except EOFError:
+        return default
+    value = str(raw or "").strip()
+    return value or default
+
+
+def _prompt_secret(label: str, *, current_present: bool = False, default: str | None = None) -> str | None:
+    suffix = " [press Enter to keep current]" if current_present else ""
+    try:
+        raw = getpass.getpass(f"{label}{suffix}: ")
+    except EOFError:
+        return default
+    value = str(raw or "").strip()
+    return value or default
+
+
+def _upsert_env_values(path: Path, values: dict[str, str]) -> list[dict[str, str]]:
+    actions: list[dict[str, str]] = []
+    existing_lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+    for key, value in values.items():
+        if value is None or str(value).strip() == "":
+            continue
+        replacement = f"{key}={value}"
+        replaced = False
+        for idx, line in enumerate(existing_lines):
+            if line.strip().startswith("#"):
+                continue
+            if re.match(rf"^\s*(?:export\s+)?{re.escape(key)}\s*=", line):
+                if existing_lines[idx] != replacement:
+                    existing_lines[idx] = replacement
+                    actions.append({"action": "updated", "path": str(path), "key": key})
+                replaced = True
+                break
+        if not replaced:
+            existing_lines.append(replacement)
+            actions.append({"action": "added", "path": str(path), "key": key})
+
+    path.write_text("\n".join(existing_lines).rstrip() + "\n", encoding="utf-8")
+    return actions
+
+
+def _upsert_atlas_config(path: Path, updates: dict[str, Any]) -> list[dict[str, str]]:
+    actions: list[dict[str, str]] = []
+    current: dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                current = loaded
+        except Exception:
+            current = {}
+
+    changed = False
+    for key, value in updates.items():
+        if value is None or str(value).strip() == "":
+            continue
+        if current.get(key) != value:
+            current[key] = value
+            actions.append({"action": "updated", "path": str(path), "key": str(key)})
+            changed = True
+
+    if changed:
+        path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return actions
+
+
+def _read_env_file(root: Path) -> dict[str, str]:
+    env_path = root / ".env"
+    values: dict[str, str] = {}
+    if not env_path.exists():
+        return values
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        values[key.strip()] = _strip_quotes(raw_value)
+    return values
+
+
 async def run_setup_diagnostics(
     *,
     client: MemoryClient | None,
@@ -365,6 +513,16 @@ async def run_setup_diagnostics(
         )
     )
 
+    llm_model = os.getenv("MEMORY_SUMMARY_MODEL") or os.getenv("MEMORY_LLM_MODEL") or _read_hermes_default_llm(root) or os.getenv("LLM_MODEL")
+    checks.append(
+        _diagnostic_entry(
+            name="llm_model",
+            status="pass" if llm_model else "warn",
+            detail=f"LLM model: {llm_model}" if llm_model else "No LLM model configured.",
+            recommendation=None if llm_model else "Set MEMORY_LLM_MODEL (or configure model.default in ~/.hermes/config.yaml).",
+        )
+    )
+
     bridge_available = importlib.util.find_spec("memory.bridge_server") is not None
     checks.append(
         _diagnostic_entry(
@@ -425,6 +583,110 @@ async def run_setup_diagnostics(
     }
 
 
+def _ensure_setup_files(root: Path) -> list[dict[str, str]]:
+    actions: list[dict[str, str]] = []
+    root.mkdir(parents=True, exist_ok=True)
+
+    env_path = root / ".env"
+    if not env_path.exists():
+        env_path.write_text(_DEFAULT_ENV_TEMPLATE, encoding="utf-8")
+        actions.append({"action": "created", "path": str(env_path)})
+
+    config_path = root / "atlas.json"
+    if not config_path.exists():
+        config_path.write_text(json.dumps(_DEFAULT_ATLAS_CONFIG, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        actions.append({"action": "created", "path": str(config_path)})
+
+    return actions
+
+
+def _collect_setup_inputs(root: Path) -> dict[str, str]:
+    file_env = _read_env_file(root)
+    default_llm = (
+        file_env.get("MEMORY_LLM_MODEL")
+        or os.getenv("MEMORY_LLM_MODEL")
+        or _read_hermes_default_llm(root)
+        or os.getenv("LLM_MODEL")
+        or "gpt-5.3-codex"
+    )
+
+    # Keep setup intentionally minimal and focused on required inputs.
+    supabase_url = _prompt_text(
+        "Supabase project URL",
+        default=file_env.get("MEMORY_SUPABASE_URL") or os.getenv("MEMORY_SUPABASE_URL"),
+    )
+    supabase_key = _prompt_secret(
+        "Supabase service role key",
+        current_present=bool(file_env.get("MEMORY_SUPABASE_KEY") or os.getenv("MEMORY_SUPABASE_KEY")),
+        default=file_env.get("MEMORY_SUPABASE_KEY") or os.getenv("MEMORY_SUPABASE_KEY"),
+    )
+    embedding_api_key = _prompt_secret(
+        "Embedding model API key",
+        current_present=bool(file_env.get("MEMORY_OPENAI_API_KEY") or os.getenv("MEMORY_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")),
+        default=file_env.get("MEMORY_OPENAI_API_KEY") or os.getenv("MEMORY_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"),
+    )
+    llm_model = _prompt_text("LLM model choice", default=default_llm)
+
+    values: dict[str, str] = {}
+    if supabase_url:
+        values["MEMORY_SUPABASE_URL"] = supabase_url
+    if supabase_key:
+        values["MEMORY_SUPABASE_KEY"] = supabase_key
+    if embedding_api_key:
+        values["MEMORY_OPENAI_API_KEY"] = embedding_api_key
+    if llm_model:
+        values["MEMORY_LLM_MODEL"] = llm_model
+    return values
+
+
+async def run_setup_workflow(
+    *,
+    client: MemoryClient | None,
+    hermes_home: str | Path | None = None,
+    client_build_error: str | None = None,
+    auto_fix: bool = True,
+) -> dict[str, Any]:
+    root = Path(hermes_home or os.getenv("HERMES_HOME") or DEFAULT_HERMES_HOME).expanduser()
+    actions = _ensure_setup_files(root) if auto_fix else []
+
+    selected_llm_model: str | None = None
+    if auto_fix and sys.stdin.isatty():
+        setup_values = _collect_setup_inputs(root)
+        if setup_values:
+            env_path = root / ".env"
+            actions.extend(_upsert_env_values(env_path, setup_values))
+            selected_llm_model = setup_values.get("MEMORY_LLM_MODEL")
+            actions.extend(_upsert_atlas_config(root / "atlas.json", {"llm_model": selected_llm_model}))
+
+    # Reload aliases/env after creating defaults so diagnostics reflect current files.
+    load_hermes_env(root)
+    diagnostics = await run_setup_diagnostics(
+        client=client,
+        hermes_home=root,
+        client_build_error=client_build_error,
+    )
+
+    unresolved = [
+        {
+            "name": check.get("name"),
+            "status": check.get("status"),
+            "recommendation": check.get("recommendation"),
+        }
+        for check in diagnostics.get("checks", [])
+        if check.get("status") in {"fail", "warn"}
+    ]
+    return {
+        "task": "setup",
+        "auto_fix": auto_fix,
+        "interactive": bool(auto_fix and sys.stdin.isatty()),
+        "actions": actions,
+        "selected_llm_model": selected_llm_model or os.getenv("MEMORY_LLM_MODEL") or _read_hermes_default_llm(root),
+        "ready": bool(diagnostics.get("ok")),
+        "diagnostics": diagnostics,
+        "next_steps": unresolved,
+    }
+
+
 async def run_task(
     task: str,
     *,
@@ -438,6 +700,7 @@ async def run_task(
     judge_enforce: bool | None = None,
     judge_model: str | None = None,
     judge_sample_limit: int | None = None,
+    auto_fix: bool = True,
 ) -> dict[str, Any]:
     if task == "replay-eval":
         resolved_min_pass_rate = min_pass_rate if min_pass_rate is not None else float(os.getenv("MEMORY_EVAL_MIN_PASS_RATE", "1.0"))
@@ -464,6 +727,17 @@ async def run_task(
             client=active_client,
             hermes_home=hermes_home,
             client_build_error=build_error,
+        )
+        if owns_client and active_client is not None:
+            await close_client_resources(active_client)
+        return result
+
+    if task == "setup":
+        result = await run_setup_workflow(
+            client=active_client,
+            hermes_home=hermes_home,
+            client_build_error=build_error,
+            auto_fix=auto_fix,
         )
         if owns_client and active_client is not None:
             await close_client_resources(active_client)
@@ -504,7 +778,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m memory.curator_runtime")
     parser.add_argument(
         "task",
-        choices=("process-memory", "extract-facts", "backfill", "stats", "health", "replay-eval", "setup-diagnostics"),
+        choices=("process-memory", "extract-facts", "backfill", "stats", "health", "replay-eval", "setup-diagnostics", "setup"),
     )
     parser.add_argument("--lookback-hours", type=int)
     parser.add_argument("--min-message-count", type=int)
@@ -514,6 +788,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-enforce", action="store_true")
     parser.add_argument("--judge-model")
     parser.add_argument("--judge-sample-limit", type=int)
+    parser.add_argument("--no-auto-fix", action="store_true")
     return parser
 
 
@@ -536,6 +811,7 @@ def main(argv: list[str] | None = None) -> int:
                 judge_enforce=args.judge_enforce,
                 judge_model=args.judge_model,
                 judge_sample_limit=args.judge_sample_limit,
+                auto_fix=not args.no_auto_fix,
             )
         )
         record_task_observability(

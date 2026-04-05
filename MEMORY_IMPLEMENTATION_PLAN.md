@@ -16,7 +16,7 @@ It answers:
 ## Last Updated
 
 - Date: `2026-04-05`
-- Repository status: `green` (`210 passed, 10 skipped`)
+- Repository status: `green` (`214 passed, 10 skipped`)
 
 
 ## Executive Summary
@@ -385,6 +385,17 @@ Important:
   - universal replay scorecard now includes intervention precision/recall observability metrics
   - schema decision: no schema changes required; all updates are runtime/retrieval/eval-layer only
 - validation: targeted changed-suite `118 passed`; atlas full suite `210 passed, 10 skipped`
+- setup UX hardening pass (this session):
+  - added one-command setup task (`python -m memory.curator_runtime setup`) that safely creates missing non-secret defaults (`~/.hermes/.env`, `~/.hermes/atlas.json`)
+  - setup now immediately runs diagnostics and returns unresolved next steps for missing secrets/config
+  - added parser support for `setup` and `--no-auto-fix`
+  - updated runtime tests for setup workflow and parser behavior
+- validation: targeted changed-suite `120 passed`; atlas full suite `212 passed, 10 skipped`
+- setup simplification pass (this session):
+  - setup now asks only for core values: Supabase URL, service-role key, embedding API key, and LLM model choice
+  - LLM choice defaults to Hermes `~/.hermes/config.yaml` (`model.default`) when available
+  - selected LLM is written to `MEMORY_LLM_MODEL` and used by summary generation when enabled
+- validation: targeted changed-suite `122 passed`; atlas full suite `214 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -486,7 +497,7 @@ Final Atlas is done when all are true:
 
 ## Immediate Next Actions
 
-1. [ ] finalize personal setup reliability (`hermes memory setup` UX and docs) — diagnostics runtime is live, docs and one-command setup flow still pending
+1. [ ] finalize personal setup reliability (`hermes memory setup` UX and docs) — atlas-side one-command setup and diagnostics are live; hermes-side setup wizard integration/docs still pending
 2. [x] implement retrieval planner skeleton and first reranker pass
 3. [x] define and migrate case-memory tables
 4. [x] make episode-first feature extraction the default memory processor path
