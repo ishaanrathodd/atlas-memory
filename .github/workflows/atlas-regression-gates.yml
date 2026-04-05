@@ -51,6 +51,11 @@ jobs:
           print(json.dumps(report, indent=2, sort_keys=True))
           if not report.get("meets_threshold", False):
             sys.exit(1)
+          overall = (report.get("universal_outcome_scorecard") or {}).get("overall_score") or {}
+          if not bool(overall.get("all_metrics_green", True)):
+            print("Universal outcome scorecard regression:")
+            print(json.dumps(overall, indent=2, sort_keys=True))
+            sys.exit(1)
           PY
 
       - name: Run long-horizon replay eval gate
@@ -70,6 +75,11 @@ jobs:
           )
           print(json.dumps(report, indent=2, sort_keys=True))
           if not report.get("meets_threshold", False):
+            sys.exit(1)
+          overall = (report.get("universal_outcome_scorecard") or {}).get("overall_score") or {}
+          if not bool(overall.get("all_metrics_green", True)):
+            print("Universal outcome scorecard regression (long-horizon):")
+            print(json.dumps(overall, indent=2, sort_keys=True))
             sys.exit(1)
           min_slot_rate = 1.0
           slot_scores = report.get("identity_slot_scores", {})
@@ -102,6 +112,11 @@ jobs:
           print(json.dumps(report, indent=2, sort_keys=True))
           if not report.get("meets_threshold", False):
             sys.exit(1)
+          overall = (report.get("universal_outcome_scorecard") or {}).get("overall_score") or {}
+          if not bool(overall.get("all_metrics_green", True)):
+            print("Universal outcome scorecard regression (identity baseline):")
+            print(json.dumps(overall, indent=2, sort_keys=True))
+            sys.exit(1)
           min_slot_rate = 1.0
           slot_scores = report.get("identity_slot_scores", {})
           failing_slots = {
@@ -133,6 +148,11 @@ jobs:
           print(json.dumps(report, indent=2, sort_keys=True))
           if not report.get("meets_threshold", False):
             sys.exit(1)
+          overall = (report.get("universal_outcome_scorecard") or {}).get("overall_score") or {}
+          if not bool(overall.get("all_metrics_green", True)):
+            print("Universal outcome scorecard regression (edge-cases):")
+            print(json.dumps(overall, indent=2, sort_keys=True))
+            sys.exit(1)
           min_slot_rate = 1.0
           slot_scores = report.get("identity_slot_scores", {})
           failing_slots = {
@@ -163,6 +183,11 @@ jobs:
           )
           print(json.dumps(report, indent=2, sort_keys=True))
           if not report.get("meets_threshold", False):
+            sys.exit(1)
+          overall = (report.get("universal_outcome_scorecard") or {}).get("overall_score") or {}
+          if not bool(overall.get("all_metrics_green", True)):
+            print("Universal outcome scorecard regression (adversarial):")
+            print(json.dumps(overall, indent=2, sort_keys=True))
             sys.exit(1)
           min_slot_rate = 1.0
           slot_scores = report.get("identity_slot_scores", {})

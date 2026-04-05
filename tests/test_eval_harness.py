@@ -55,6 +55,10 @@ async def test_run_replay_eval_reports_threshold_failure(tmp_path):
     assert report["pass_rate"] == 0.5
     assert report["meets_threshold"] is False
     assert report["failed_scenarios"][0]["scenario_id"] == "fail"
+    scorecard = report["universal_outcome_scorecard"]
+    assert scorecard["overall_score"]["all_metrics_green"] is False
+    assert "regression_resilience" in scorecard
+    assert scorecard["regression_resilience"]["pass_rate"] == 0.5
 
 
 @pytest.mark.asyncio
@@ -67,6 +71,9 @@ async def test_run_replay_eval_fixture_passes_regression_gate():
     assert report["total"] >= 2
     assert report["failed"] == 0
     assert report["meets_threshold"] is True
+    scorecard = report["universal_outcome_scorecard"]
+    assert scorecard["overall_score"]["all_metrics_green"] is True
+    assert scorecard["regression_resilience"]["pass_rate"] == 1.0
 
 
 @pytest.mark.asyncio

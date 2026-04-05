@@ -342,6 +342,11 @@ Important:
   - CI now runs a dedicated long-horizon replay eval gate with slot-level threshold enforcement when identity slots are exercised
   - schema decision: no schema changes required; this milestone is retrieval-eval and gating only
 - validation: replay harness tests `6 passed`; atlas full suite `198 passed, 10 skipped`
+- implemented universal cross-department replay scorecard in eval harness:
+  - replay reports now include `universal_outcome_scorecard` with continuity carry-forward, restatement burden, outcome-grounded guidance, adaptation latency, and regression resilience metrics
+  - each replay CI gate now fails on universal scorecard regressions (`overall_score.all_metrics_green=false`) in addition to existing pass-rate/slot gates
+  - schema decision: no schema changes required; this is report-layer scoring and CI enforcement only
+- validation: replay harness tests `6 passed`; atlas full suite `198 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -350,6 +355,7 @@ Important:
 
 - deterministic replay scenarios in CI
 - regression pass/fail thresholds
+- universal cross-department scorecard gate (`universal_outcome_scorecard.overall_score`)
 - unit and integration test coverage
 
 ### Next Evaluation Layer
@@ -374,6 +380,41 @@ Important:
 
 5. Proactive intervention precision
 - how often proactive warnings were judged useful vs noisy
+
+### Universal Outcome Metrics (Cross-Department, V1)
+
+These metrics intentionally apply across communication, planning, debugging, execution, and risk coaching.
+No department-specific schema is required; all measurements should be derived from existing memory evidence and outcomes.
+
+1. Continuity carry-forward rate
+- definition: in turns where prior durable context should matter, how often did the response behavior reflect that context without user restatement?
+- signal sources: replay scenarios, quote coverage lines, continuity handoff lines, identity/policy evidence surfaced in enrichment.
+
+2. Restatement burden
+- definition: average number of clarification/restatement turns required before alignment after context changes.
+- target direction: lower is better.
+- signal sources: user corrections, repeated preference restatements, directive churn windows.
+
+3. Outcome-grounded guidance rate
+- definition: percentage of recommendation/execution answers that cite relevant prior outcomes or patterns when available.
+- target direction: higher is better, with evidence linkage.
+- signal sources: decision outcome usage, pattern usage, proactive coach lines, evidence coverage.
+
+4. Adaptation latency
+- definition: number of turns between new user feedback and stable behavioral adoption in downstream responses.
+- target direction: lower is better, but non-zero guardrails prevent thrash.
+- signal sources: directive/preference updates, supersession events, replay temporal phase scenarios.
+
+5. Regression resilience
+- definition: pass rate of deterministic + adversarial + long-horizon replay suites under strict thresholds.
+- target direction: remain at or above gate thresholds; no silent degradation across departments.
+- signal sources: CI replay gates and per-slot/per-route replay scorecards.
+
+### Universal Metrics Guardrails
+
+- optimize globally, not per-feature: any change that improves one department while hurting others should fail evaluation.
+- keep evidence auditable: every metric movement must map back to concrete replay cases or linked outcomes.
+- avoid overfitting: add scenario diversity (context switches, temporal drift, contradictory feedback) before accepting improvements.
 
 
 ## Data Retention and Cost Controls

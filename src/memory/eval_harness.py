@@ -47,6 +47,34 @@ from memory.models import (
 DEFAULT_SCENARIOS_PATH = Path("tests/fixtures/replay_eval_scenarios.json")
 _IDENTITY_LINE_RE = re.compile(r"^\[(name|religion|origin|location|role|employer|identity|communication)\]\s+(active|confirmed|revoked|uncertain|directive):", re.IGNORECASE)
 _IDENTITY_EXPECT_CONTAINS_RE = re.compile(r"\[(name|religion|origin|location|role|employer|identity)\]\s+(active|confirmed|revoked|uncertain):", re.IGNORECASE)
+_CONTINUITY_MIN_COUNT_KEYS = {
+    "always_on_identity_lines",
+    "core_profile_lines",
+    "continuity_handoff_lines",
+    "decision_outcomes",
+    "exact_recall_mode",
+    "patterns",
+    "proactive_coach_lines",
+    "quote_coverage_lines",
+    "relevant_episodes",
+    "reflections",
+    "timeline_events",
+    "verbatim_evidence_lines",
+}
+_OUTCOME_GROUNDED_MIN_COUNT_KEYS = {
+    "decision_outcomes",
+    "patterns",
+    "proactive_coach_lines",
+}
+_TEMPORAL_SIGNAL_KEYS = {
+    "created_at",
+    "updated_at",
+    "event_time",
+    "last_observed_at",
+    "valid_from",
+    "message_timestamp",
+    "first_observed_at",
+}
 
 
 def _utcnow() -> datetime:
@@ -110,6 +138,164 @@ def _identity_expectations_for_scenario(scenario: ReplayScenario) -> dict[str, s
         for slot, state in scenario.identity_slot_expectations.items()
     }
     return {**inferred_identity_expectations, **explicit_identity_expectations}
+
+
+def _scenario_requires_min_count(scenario: ReplayScenario, keys: set[str]) -> bool:
+    for key in keys:
+        if int(scenario.min_counts.get(key, 0)) > 0:
+            return True
+    return False
+
+
+def _scenario_has_any_expectation(scenario: ReplayScenario) -> bool:
+    return bool(
+        scenario.expect_contains
+        or scenario.expect_not_contains
+        or scenario.min_counts
+        or _identity_expectations_for_scenario(scenario)
+    )
+
+
+def _scenario_has_temporal_signal(scenario: ReplayScenario) -> bool:
+    seed = scenario.seed if isinstance(scenario.seed, dict) else {}
+
+    def _items(name: str) -> list[dict[str, Any]]:
+        raw = seed.get(name, [])
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw if isinstance(item, dict)]
+
+    def _has_temporal(items: list[dict[str, Any]]) -> bool:
+        return any(any(item.get(key) for key in _TEMPORAL_SIGNAL_KEYS) for item in items)
+
+    fact_items = _items("facts")
+    directive_items = _items("directives")
+    outcome_items = _items("decision_outcomes")
+    pattern_items = _items("patterns")
+
+    temporal = (
+        _has_temporal(fact_items)
+        or _has_temporal(directive_items)
+        or _has_temporal(outcome_items)
+        or _has_temporal(pattern_items)
+    )
+    if not temporal:
+        return False
+
+    has_sequence = len(fact_items) >= 2 or len(directive_items) >= 2 or len(outcome_items) >= 2
+    has_lifecycle_expectation = bool(_identity_expectations_for_scenario(scenario))
+    return has_sequence or has_lifecycle_expectation
+
+
+def _build_universal_outcome_scorecard(
+    scenarios: list[ReplayScenario],
+    results: list[dict[str, Any]],
+    *,
+    threshold: float,
+) -> dict[str, Any]:
+    result_by_id = {str(item.get("scenario_id")): item for item in results}
+
+    def _bucket(required_ids: set[str]) -> tuple[int, int]:
+        required = len(required_ids)
+        passed = 0
+        for scenario_id in required_ids:
+            if bool((result_by_id.get(scenario_id) or {}).get("passed")):
+                passed += 1
+        return required, passed
+
+    continuity_required = {
+        scenario.id
+        for scenario in scenarios
+        if _scenario_requires_min_count(scenario, _CONTINUITY_MIN_COUNT_KEYS)
+        or bool(_identity_expectations_for_scenario(scenario))
+    }
+    alignment_required = {
+        scenario.id
+        for scenario in scenarios
+        if _scenario_has_any_expectation(scenario)
+    }
+    outcome_required = {
+        scenario.id
+        for scenario in scenarios
+        if _scenario_requires_min_count(scenario, _OUTCOME_GROUNDED_MIN_COUNT_KEYS)
+    }
+    adaptation_required = {
+        scenario.id
+        for scenario in scenarios
+        if _scenario_has_temporal_signal(scenario)
+    }
+
+    continuity_required_count, continuity_passed = _bucket(continuity_required)
+    alignment_required_count, alignment_passed = _bucket(alignment_required)
+    outcome_required_count, outcome_passed = _bucket(outcome_required)
+    adaptation_required_count, adaptation_passed = _bucket(adaptation_required)
+
+    def _rate(passed_count: int, required_count: int) -> float:
+        if required_count <= 0:
+            return 1.0
+        return round(float(passed_count) / float(required_count), 6)
+
+    continuity_rate = _rate(continuity_passed, continuity_required_count)
+    alignment_rate = _rate(alignment_passed, alignment_required_count)
+    outcome_rate = _rate(outcome_passed, outcome_required_count)
+    adaptation_rate = _rate(adaptation_passed, adaptation_required_count)
+
+    total = len(results)
+    passed = sum(1 for item in results if item.get("passed"))
+    regression_rate = _rate(passed, total)
+
+    metrics = {
+        "continuity_carry_forward_rate": {
+            "required": continuity_required_count,
+            "passed": continuity_passed,
+            "pass_rate": continuity_rate,
+        },
+        "restatement_burden": {
+            "required": alignment_required_count,
+            "aligned_without_restatement": alignment_passed,
+            "pass_rate": alignment_rate,
+            "burden_rate": round(1.0 - alignment_rate, 6),
+        },
+        "outcome_grounded_guidance_rate": {
+            "required": outcome_required_count,
+            "passed": outcome_passed,
+            "pass_rate": outcome_rate,
+        },
+        "adaptation_latency": {
+            "required": adaptation_required_count,
+            "adopted_on_first_turn": adaptation_passed,
+            "pass_rate": adaptation_rate,
+            "estimated_extra_turns_per_case": round(1.0 - adaptation_rate, 6),
+        },
+        "regression_resilience": {
+            "required": total,
+            "passed": passed,
+            "pass_rate": regression_rate,
+            "threshold": float(threshold),
+            "meets_threshold": regression_rate >= float(threshold),
+        },
+    }
+
+    metric_rates = [
+        continuity_rate,
+        alignment_rate,
+        outcome_rate,
+        adaptation_rate,
+        regression_rate,
+    ]
+    metrics_below_threshold = {
+        name: metric
+        for name, metric in metrics.items()
+        if float(metric.get("pass_rate", 1.0)) < float(threshold)
+    }
+    metrics["overall_score"] = {
+        "threshold": float(threshold),
+        "metrics_considered": len(metric_rates),
+        "mean_pass_rate": round(sum(metric_rates) / float(len(metric_rates)), 6) if metric_rates else 1.0,
+        "all_metrics_green": not metrics_below_threshold,
+        "metrics_below_threshold": sorted(metrics_below_threshold.keys()),
+    }
+    return metrics
 
 
 class _EvalTransport:
@@ -647,6 +833,11 @@ async def run_replay_eval(
         }
         for slot, values in sorted(slot_scores.items())
     }
+    universal_outcome_scorecard = _build_universal_outcome_scorecard(
+        scenarios,
+        results,
+        threshold=float(min_pass_rate),
+    )
 
     return {
         "task": "replay-eval",
@@ -657,6 +848,7 @@ async def run_replay_eval(
         "min_pass_rate": float(min_pass_rate),
         "meets_threshold": pass_rate >= float(min_pass_rate),
         "identity_slot_scores": identity_slot_scores,
+        "universal_outcome_scorecard": universal_outcome_scorecard,
         "failed_scenarios": [
             {
                 "scenario_id": item.get("scenario_id"),
