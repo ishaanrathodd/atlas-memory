@@ -134,6 +134,18 @@ def test_extract_facts_skips_low_value_project_chatter() -> None:
     assert "rebuilding the Memory memory retrieval layer" in extracted[0].content
 
 
+def test_extract_facts_captures_informal_religion_identity_phrase() -> None:
+    turns = [
+        _make_turn("im from a marwari family", minutes_ago=1),
+    ]
+
+    extracted = extract_facts(turns, now=_utcnow())
+
+    assert len(extracted) == 1
+    assert extracted[0].category is FactCategory.IDENTITY
+    assert "marwari family" in extracted[0].content.lower()
+
+
 def test_deduplicate_facts_merges_duplicate_candidates() -> None:
     turns = [
         {

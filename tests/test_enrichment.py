@@ -1657,6 +1657,30 @@ async def test_enrich_context_injects_always_known_profile_for_non_profile_queri
 
 
 @pytest.mark.asyncio
+async def test_enrich_context_keeps_concise_identity_in_always_known_profile() -> None:
+    _, _, transport = _build_client_with_transport()
+    identity_fact = _make_fact(
+        "User is a marwari.",
+        category=FactCategory.IDENTITY,
+        tags=["identity"],
+        hours_ago=1,
+    )
+    transport.facts = {
+        str(identity_fact.id): identity_fact,
+    }
+
+    context = await enrich_context(
+        transport,
+        "help me plan this week",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Always-known user profile:" in context
+    assert "User is a marwari." in context
+
+
+@pytest.mark.asyncio
 async def test_enrich_context_proactive_coach_warns_using_past_failures_and_wins() -> None:
     _, _, transport = _build_client_with_transport()
     now = _utcnow()

@@ -1749,6 +1749,7 @@ def _timeline_event_matches_iso_week(event: TimelineEvent, *, year: int, week: i
 def _build_core_profile_lines(facts: list[Fact], *, query_tokens: set[str]) -> list[str]:
     category_bonus = {
         FactCategory.IDENTITY: 4.0,
+        FactCategory.PREFERENCE: 3.5,
         FactCategory.RELATIONSHIP: 3.0,
         FactCategory.GOAL: 2.5,
         FactCategory.PROJECT: 2.0,
@@ -1756,12 +1757,20 @@ def _build_core_profile_lines(facts: list[Fact], *, query_tokens: set[str]) -> l
         FactCategory.HEALTH: 1.2,
         FactCategory.FINANCE: 1.2,
     }
+
+    def _core_profile_min_tokens(fact: Fact) -> int:
+        if fact.category is FactCategory.IDENTITY:
+            return 2
+        if fact.category is FactCategory.PREFERENCE:
+            return 3
+        return 4
+
     candidates = [
         fact
         for fact in facts
         if fact.category in category_bonus
         if not _looks_like_low_quality_fact(fact)
-        if len(_tokenize(fact.content)) >= 4
+        if len(_tokenize(fact.content)) >= _core_profile_min_tokens(fact)
     ]
     ranked = sorted(
         candidates,

@@ -1031,6 +1031,39 @@ async def test_refresh_directives_skips_one_off_temporal_instruction() -> None:
 
 
 @pytest.mark.asyncio
+async def test_refresh_directives_captures_save_standing_directives_phrasing() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+    session = _make_session(
+        started_at=now - timedelta(hours=3),
+        message_count=4,
+        summary="User defined standing directive behavior for communication style.",
+    ).model_copy(update={"agent_namespace": "main"})
+    transport.sessions[str(session.id)] = session
+    transport.episodes_by_session[str(session.id)] = [
+        _make_episode(
+            str(session.id),
+            EpisodeRole.USER,
+            "You need to maintain the speaking tone I told you and stop acting like a yes-man.",
+            0,
+        ).model_copy(update={"agent_namespace": "main"}),
+        _make_episode(
+            str(session.id),
+            EpisodeRole.USER,
+            "Also save this in standing directives so it stays in every context.",
+            1,
+        ).model_copy(update={"agent_namespace": "main"}),
+    ]
+
+    stats = await refresh_directives(client, now=now, agent_namespace="main")
+
+    assert stats["directives_upserted"] >= 1
+    contents = [directive.content.lower() for directive in transport.directives]
+    assert any("speaking tone" in content for content in contents)
+
+
+@pytest.mark.asyncio
 async def test_refresh_directives_does_not_supersede_recent_unseen_directive_due_to_scan_limit() -> None:
     transport = CuratorRuntimeTransport()
     client = _make_client(transport)
@@ -2259,6 +2292,29 @@ async def test_extract_facts_from_recent_sessions_is_idempotent() -> None:
     assert second["sessions_processed"] == 1
     assert second["facts_extracted"] == 2
     assert len(transport.facts) == 2
+
+
+@pytest.mark.asyncio
+async def test_extract_facts_from_recent_sessions_includes_unsummarized_sessions() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    session = _make_session(
+        started_at=_utcnow() - timedelta(hours=2),
+        message_count=3,
+        summary=None,
+    )
+    transport.sessions[str(session.id)] = session
+    transport.episodes_by_session[str(session.id)] = [
+        _make_episode(str(session.id), EpisodeRole.USER, "im from a marwari family", 0),
+        _make_episode(str(session.id), EpisodeRole.ASSISTANT, "Noted.", 1),
+        _make_episode(str(session.id), EpisodeRole.USER, "I prefer concise and direct replies.", 2),
+    ]
+
+    result = await extract_facts_from_recent_sessions(client, lookback_hours=24, min_message_count=1)
+
+    assert result["sessions_processed"] == 1
+    assert result["facts_extracted"] >= 1
+    assert any("marwari" in fact.content.lower() for fact in transport.facts.values())
 
 
 def test_load_hermes_env_resolves_shell_references(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

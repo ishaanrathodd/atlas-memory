@@ -105,6 +105,13 @@ _DIRECTIVE_MARKERS = (
     "prefer",
     "preference",
     "keep",
+    "save",
+    "store",
+    "directive",
+    "directives",
+    "need to",
+    "should",
+    "maintain",
 )
 _DIRECTIVE_PREFIXES = (
     "always ",
@@ -124,6 +131,16 @@ _DIRECTIVE_PREFIXES = (
     "keep ",
     "i prefer ",
     "my preference is ",
+    "save ",
+    "store ",
+    "remember ",
+    "attach ",
+    "you need to ",
+    "u need to ",
+    "you should ",
+    "u should ",
+    "you have to ",
+    "u have to ",
 )
 _DIRECTIVE_TARGET_HINTS = (
     "you",
@@ -141,6 +158,10 @@ _DIRECTIVE_TARGET_HINTS = (
     "style",
     "wording",
     "language",
+    "directive",
+    "directives",
+    "context",
+    "memory",
 )
 _DIRECTIVE_ACTION_HINTS = (
     "delegate",
@@ -164,6 +185,11 @@ _DIRECTIVE_ACTION_HINTS = (
     "phrase",
     "format",
     "keep",
+    "save",
+    "store",
+    "attach",
+    "maintain",
+    "follow",
 )
 _DIRECTIVE_QUESTION_PREFIXES = (
     "what ",
@@ -201,9 +227,13 @@ _DIRECTIVE_REJECT_MARKERS = (
     "respond to the user",
     "[system:",
     "session is about to be automatically reset",
+    "u fucked up",
+    "fuck up",
+    "u r still lying",
+    "still lying",
 )
 _DIRECTIVE_LEAD_IN_RE = re.compile(
-    r"^(?:(?:and|but|so|okay|ok|hey|listen|note)\s*,?\s*)+",
+    r"^(?:(?:and|but|so|okay|ok|hey|listen|note|also)\s*,?\s*)+",
     re.IGNORECASE,
 )
 _BLOCKER_MARKERS = (
@@ -3682,12 +3712,29 @@ async def extract_facts_from_recent_sessions(
         "error_details": [],
     }
 
-    sessions = await _list_recent_summarized_sessions(
-        client,
-        since=since,
-        min_message_count=min_message_count,
-        agent_namespace=agent_namespace,
+    summarized_sessions, unsummarized_sessions = await asyncio.gather(
+        _list_recent_summarized_sessions(
+            client,
+            since=since,
+            min_message_count=min_message_count,
+            agent_namespace=agent_namespace,
+        ),
+        _list_recent_unsummarized_sessions(
+            client,
+            since=since,
+            min_message_count=min_message_count,
+            agent_namespace=agent_namespace,
+        ),
     )
+
+    deduped_sessions: dict[str, Session] = {}
+    for session in [*summarized_sessions, *unsummarized_sessions]:
+        session_id = str(session.id)
+        existing = deduped_sessions.get(session_id)
+        if existing is None or _sort_datetime(session.started_at) > _sort_datetime(existing.started_at):
+            deduped_sessions[session_id] = session
+
+    sessions = sorted(deduped_sessions.values(), key=lambda item: item.started_at)
     for session in sessions:
         session_id = str(session.id)
         try:

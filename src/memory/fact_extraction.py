@@ -91,6 +91,7 @@ _GOAL_PATTERNS = (
 )
 _IDENTITY_PATTERNS = (
     re.compile(r"^my name is\s+(?P<value>.+)$", re.IGNORECASE),
+    re.compile(r"^my religion is\s+(?P<value>.+)$", re.IGNORECASE),
     re.compile(r"^(?:i|we)\s+(?:am|are|'m)\s+(?:a|an)\s+(?P<value>.+)$", re.IGNORECASE),
     re.compile(r"^(?:i|we)\s+work as\s+(?P<value>.+)$", re.IGNORECASE),
     re.compile(r"^(?:i|we)\s+work at\s+(?P<value>.+)$", re.IGNORECASE),
@@ -392,6 +393,9 @@ def _split_clauses(content: str) -> list[str]:
 def _normalize_clause_for_matching(clause: str, turn: ConversationTurn) -> str:
     normalized = clause.strip()
     lowered = normalized.lower()
+    if lowered.startswith("im "):
+        normalized = "I am " + normalized[3:]
+        lowered = normalized.lower()
     if lowered.startswith("i'm "):
         normalized = "I am " + normalized[4:]
     if turn.role is EpisodeRole.ASSISTANT:
@@ -616,6 +620,8 @@ def _extract_identity(clause: str, turn: ConversationTurn, turn_index: int, now:
             return []
         if lowered.startswith("my name is"):
             content = f"User's name is {value}"
+        elif lowered.startswith("my religion is"):
+            content = f"User's religion is {value}"
         elif "work as" in lowered:
             content = f"User works as {value}"
         elif "work at" in lowered:
