@@ -16,7 +16,7 @@ It answers:
 ## Last Updated
 
 - Date: `2026-04-05`
-- Repository status: `green` (`189 passed, 10 skipped`)
+- Repository status: `green` (`194 passed, 10 skipped`)
 
 
 ## Executive Summary
@@ -316,7 +316,11 @@ Important:
 - aligned warm live-curator session/backlog consolidation with the same summary gate (`MEMORY_ENABLE_SESSION_SUMMARIES`) so LLM summaries are optional in continuity refresh loops
 - updated active-state curation to prefer episode-derived focus/priority signals and include unsummarized sessions by default
 - updated timeline event generation to build session/day/week summaries from episode content first (summary column as fallback)
-- validation: targeted client+enrichment+curator runtime suite `118 passed`; atlas full suite `189 passed, 10 skipped`
+- implemented canonical identity lifecycle resolution inside always-on identity injection:
+  - deterministic slot model (`name`, `religion`, `origin`, `location`, `role`, `employer`, `identity`)
+  - explicit lifecycle states (`active/confirmed`, `superseded`, `revoked`, `uncertain`)
+  - contradiction-safe storage behavior (identity facts with conflicting lifecycle states are preserved as separate evidence)
+- validation: targeted lifecycle/enrichment suite `52 passed`; atlas full suite `194 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -388,7 +392,7 @@ Final Atlas is done when all are true:
 4. [x] make episode-first feature extraction the default memory processor path
 5. [x] add explicit always-on identity layer in enrichment context
 6. [ ] add long-horizon LLM eval suite (alongside deterministic replay)
-7. [ ] complete canonical identity conflict-resolution lifecycle (confirm/supersede/revoke semantics)
+7. [x] complete canonical identity conflict-resolution lifecycle (confirm/supersede/revoke semantics)
 
 
 ## Next Chat Continuation Protocol

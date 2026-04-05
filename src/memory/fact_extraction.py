@@ -98,6 +98,16 @@ _IDENTITY_PATTERNS = (
     re.compile(r"^(?:i|we)\s+live in\s+(?P<value>.+)$", re.IGNORECASE),
     re.compile(r"^(?:i|we)\s+(?:am|are|'m)\s+from\s+(?P<value>.+)$", re.IGNORECASE),
 )
+_IDENTITY_REVOKE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("religion", re.compile(r"^my religion is not\s+(?P<value>.+)$", re.IGNORECASE)),
+    ("origin", re.compile(r"^(?:i|we)\s+(?:am|are|'m)\s+not\s+from\s+(?P<value>.+)$", re.IGNORECASE)),
+    ("identity", re.compile(r"^(?:i|we)\s+(?:am|are|'m)\s+not\s+(?:a|an\s+)?(?P<value>.+)$", re.IGNORECASE)),
+)
+_IDENTITY_UNCERTAIN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("religion", re.compile(r"^i\s*(?:am|'m)\s+not\s+sure\s+(?:if\s+)?my religion is\s+(?P<value>.+)$", re.IGNORECASE)),
+    ("identity", re.compile(r"^(?:i|we)\s+(?:think|guess|believe)\s+(?:i\s*(?:am|'m)|we are)\s+(?P<value>.+)$", re.IGNORECASE)),
+    ("identity", re.compile(r"^(?:i|we)\s+(?:might|may)\s+be\s+(?P<value>.+)$", re.IGNORECASE)),
+)
 _PROJECT_PATTERN = re.compile(
     r"\b(?:deadline|launch|release|project|migration|milestone|roadmap|rollout|ship)\b",
     re.IGNORECASE,
@@ -602,6 +612,108 @@ def _extract_goal(clause: str, turn: ConversationTurn, turn_index: int, now: dat
     return []
 
 
+def _identity_slot_from_clause(lowered_clause: str) -> str:
+    if lowered_clause.startswith("my name is"):
+        return "name"
+    if lowered_clause.startswith("my religion is"):
+        return "religion"
+    if "work as" in lowered_clause:
+        return "role"
+    if "work at" in lowered_clause:
+        return "employer"
+    if "live in" in lowered_clause:
+        return "location"
+    if "from" in lowered_clause:
+        return "origin"
+    return "identity"
+
+
+def _identity_content(slot: str, state: str, value: str) -> str:
+    if state == "revoked":
+        if slot == "religion":
+            return f"User's religion is not {value}"
+        if slot == "origin":
+            return f"User is not from {value}"
+        if slot == "location":
+            return f"User does not live in {value}"
+        if slot == "role":
+            return f"User does not work as {value}"
+        if slot == "employer":
+            return f"User does not work at {value}"
+        return f"User is not {value}"
+    if state == "uncertain":
+        if slot == "religion":
+            return f"User may follow {value}"
+        if slot == "origin":
+            return f"User may be from {value}"
+        if slot == "location":
+            return f"User may live in {value}"
+        if slot == "role":
+            return f"User may work as {value}"
+        if slot == "employer":
+            return f"User may work at {value}"
+        return f"User may be {value}"
+    if slot == "name":
+        return f"User's name is {value}"
+    if slot == "religion":
+        return f"User's religion is {value}"
+    if slot == "role":
+        return f"User works as {value}"
+    if slot == "employer":
+        return f"User works at {value}"
+    if slot == "location":
+        return f"User lives in {value}"
+    if slot == "origin":
+        return f"User is from {value}"
+    return f"User is a {value}"
+
+
+def _identity_state_from_tags(tags: Iterable[str]) -> str:
+    normalized = [str(tag).strip().lower() for tag in tags]
+    for tag in normalized:
+        if tag.startswith("identity_state:"):
+            return tag.split(":", 1)[1]
+    if "identity_revoked" in normalized:
+        return "revoked"
+    if "identity_uncertain" in normalized:
+        return "uncertain"
+    return "affirmed"
+
+
+def _identity_slot_from_tags(tags: Iterable[str]) -> str | None:
+    normalized = [str(tag).strip().lower() for tag in tags]
+    for tag in normalized:
+        if tag.startswith("identity_slot:"):
+            return tag.split(":", 1)[1] or None
+    return None
+
+
+def _identity_conflicts(left: ExtractedFact, right: ExtractedFact) -> bool:
+    if left.category is not FactCategory.IDENTITY or right.category is not FactCategory.IDENTITY:
+        return False
+    left_slot = _identity_slot_from_tags(left.tags)
+    right_slot = _identity_slot_from_tags(right.tags)
+    if left_slot is None or right_slot is None:
+        return False
+    if left_slot != right_slot:
+        return False
+    return _identity_state_from_tags(left.tags) != _identity_state_from_tags(right.tags)
+
+
+def _identity_conflicts_with_existing(existing: Fact, candidate: ExtractedFact) -> bool:
+    if existing.category is not FactCategory.IDENTITY or candidate.category is not FactCategory.IDENTITY:
+        return False
+    existing_slot = _identity_slot_from_tags(existing.tags)
+    candidate_slot = _identity_slot_from_tags(candidate.tags)
+    if existing_slot is None or candidate_slot is None:
+        return False
+    if existing_slot != candidate_slot:
+        return False
+    existing_state = _identity_state_from_tags(existing.tags)
+    candidate_state = _identity_state_from_tags(candidate.tags)
+    return existing_state != candidate_state
+
+
 def _extract_identity(clause: str, turn: ConversationTurn, turn_index: int, now: datetime) -> list[ExtractedFact]:
     if turn.role is not EpisodeRole.USER:
         return []
@@ -609,6 +721,49 @@ def _extract_identity(clause: str, turn: ConversationTurn, turn_index: int, now:
     if _looks_like_meta_or_instruction_clause(normalized_clause):
         return []
     lowered = normalized_clause.lower()
+
+    for slot, pattern in _IDENTITY_REVOKE_PATTERNS:
+        match = pattern.match(normalized_clause)
+        if not match:
+            continue
+        value = _strip_trailing_punctuation(match.group("value"))
+        if not value or not _is_plausible_personal_value(value, max_tokens=12):
+            return []
+        return [
+            _candidate(
+                content=_identity_content(slot, "revoked", value),
+                category=FactCategory.IDENTITY,
+                confidence=0.82,
+                turn=turn,
+                turn_index=turn_index,
+                excerpt=clause,
+                tags=_tags_from_text(value, extra=("identity", f"identity_slot:{slot}", "identity_state:revoked", "identity_revoked")),
+                transaction_time=now,
+            )
+        ]
+
+    for slot, pattern in _IDENTITY_UNCERTAIN_PATTERNS:
+        match = pattern.match(normalized_clause)
+        if not match:
+            continue
+        value = _strip_trailing_punctuation(match.group("value"))
+        if not value or not _is_plausible_personal_value(value, max_tokens=12):
+            return []
+        if value.split(" ", 1)[0].lower() in _EMOTION_WORDS:
+            return []
+        return [
+            _candidate(
+                content=_identity_content(slot, "uncertain", value),
+                category=FactCategory.IDENTITY,
+                confidence=0.62,
+                turn=turn,
+                turn_index=turn_index,
+                excerpt=clause,
+                tags=_tags_from_text(value, extra=("identity", f"identity_slot:{slot}", "identity_state:uncertain", "identity_uncertain")),
+                transaction_time=now,
+            )
+        ]
+
     for pattern in _IDENTITY_PATTERNS:
         match = pattern.match(normalized_clause)
         if not match:
@@ -618,20 +773,10 @@ def _extract_identity(clause: str, turn: ConversationTurn, turn_index: int, now:
             continue
         if lowered.startswith(("i am ", "i'm ")) and value.split(" ", 1)[0].lower() in _EMOTION_WORDS:
             return []
-        if lowered.startswith("my name is"):
-            content = f"User's name is {value}"
-        elif lowered.startswith("my religion is"):
-            content = f"User's religion is {value}"
-        elif "work as" in lowered:
-            content = f"User works as {value}"
-        elif "work at" in lowered:
-            content = f"User works at {value}"
-        elif "live in" in lowered:
-            content = f"User lives in {value}"
-        elif "from" in lowered:
-            content = f"User is from {value}"
-        else:
-            content = f"User is a {value}"
+        if not _is_plausible_personal_value(value, max_tokens=12):
+            return []
+        slot = _identity_slot_from_clause(lowered)
+        content = _identity_content(slot, "affirmed", value)
         return [
             _candidate(
                 content=content,
@@ -640,7 +785,7 @@ def _extract_identity(clause: str, turn: ConversationTurn, turn_index: int, now:
                 turn=turn,
                 turn_index=turn_index,
                 excerpt=clause,
-                tags=_tags_from_text(value, extra=("identity",)),
+                tags=_tags_from_text(value, extra=("identity", f"identity_slot:{slot}", "identity_state:affirmed", "identity_affirmed")),
                 transaction_time=now,
             )
         ]
@@ -702,6 +847,8 @@ def deduplicate_facts(facts: Sequence[ExtractedFact]) -> list[ExtractedFact]:
         for index, existing in enumerate(deduplicated):
             same_key = _content_key(existing.category, existing.content) == _content_key(fact.category, fact.content)
             close_match = existing.category is fact.category and _similarity(existing.content, fact.content) >= 0.8
+            if close_match and _identity_conflicts(existing, fact):
+                continue
             if same_key or close_match:
                 matched_index = index
                 break
@@ -744,6 +891,8 @@ def _match_existing_fact(existing_facts: Sequence[Fact], candidate: ExtractedFac
         if existing_key == candidate_key:
             return existing
         if existing.category is not candidate.category:
+            continue
+        if _identity_conflicts_with_existing(existing, candidate):
             continue
         score = _similarity(existing.content, candidate.content)
         if score > best_score:

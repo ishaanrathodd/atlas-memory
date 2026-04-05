@@ -1724,7 +1724,99 @@ async def test_enrich_context_injects_explicit_always_on_identity_layer() -> Non
     assert "Always-on identity layer:" in context
     assert "User is from a marwari family." in context
     assert "User prefers concise and direct replies." in context
-    assert "Communication directive: Always keep replies concise and direct." in context
+    assert "[communication] directive: Always keep replies concise and direct." in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_identity_layer_marks_confirmed_and_superseded_values() -> None:
+    _, _, transport = _build_client_with_transport()
+    transport.facts = {
+        str(uuid4()): _make_fact(
+            "User's religion is jain.",
+            category=FactCategory.IDENTITY,
+            tags=["identity", "identity_slot:religion", "identity_state:affirmed"],
+            hours_ago=6,
+            confidence=0.88,
+        ),
+        str(uuid4()): _make_fact(
+            "User's religion is hindu.",
+            category=FactCategory.IDENTITY,
+            tags=["identity", "identity_slot:religion", "identity_state:affirmed"],
+            hours_ago=2,
+            confidence=0.9,
+        ),
+        str(uuid4()): _make_fact(
+            "User's religion is hindu.",
+            category=FactCategory.IDENTITY,
+            tags=["identity", "identity_slot:religion", "identity_state:affirmed"],
+            hours_ago=1,
+            confidence=0.92,
+        ),
+    }
+
+    context = await enrich_context(
+        transport,
+        "what should you keep in mind about me",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Always-on identity layer:" in context
+    assert "[religion] confirmed: hindu" in context.lower()
+    assert "superseded: jain" in context.lower()
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_identity_layer_marks_revoked_value() -> None:
+    _, _, transport = _build_client_with_transport()
+    transport.facts = {
+        str(uuid4()): _make_fact(
+            "User's religion is hindu.",
+            category=FactCategory.IDENTITY,
+            tags=["identity", "identity_slot:religion", "identity_state:affirmed"],
+            hours_ago=8,
+        ),
+        str(uuid4()): _make_fact(
+            "User's religion is not hindu.",
+            category=FactCategory.IDENTITY,
+            tags=["identity", "identity_slot:religion", "identity_state:revoked", "identity_revoked"],
+            hours_ago=1,
+        ),
+    }
+
+    context = await enrich_context(
+        transport,
+        "recall my stable identity",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Always-on identity layer:" in context
+    assert "[religion] revoked: hindu" in context.lower()
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_identity_layer_marks_uncertain_when_no_affirmed_value() -> None:
+    _, _, transport = _build_client_with_transport()
+    transport.facts = {
+        str(uuid4()): _make_fact(
+            "User may be marwari.",
+            category=FactCategory.IDENTITY,
+            tags=["identity", "identity_slot:identity", "identity_state:uncertain", "identity_uncertain"],
+            hours_ago=1,
+            confidence=0.62,
+        ),
+    }
+
+    context = await enrich_context(
+        transport,
+        "what do you know for sure",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Always-on identity layer:" in context
+    assert "[identity] uncertain: marwari" in context.lower()
 
 
 @pytest.mark.asyncio

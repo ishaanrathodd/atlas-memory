@@ -224,3 +224,67 @@ async def test_extract_and_store_facts_merges_with_existing_fact() -> None:
     assert "coffee" in merged.content.lower()
     assert "preference" in merged.tags
     assert [history.operation.value for history in transport.history] == ["update"]
+
+
+def test_extract_facts_emits_identity_slot_and_lifecycle_tags() -> None:
+    turns = [
+        _make_turn("my religion is hindu", minutes_ago=3),
+        _make_turn("my religion is not hindu", minutes_ago=2),
+        _make_turn("i think i am a marwari", minutes_ago=1),
+    ]
+
+    extracted = extract_facts(turns, now=_utcnow())
+
+    religion_affirmed = next(
+        fact
+        for fact in extracted
+        if fact.category is FactCategory.IDENTITY
+        and "identity_slot:religion" in fact.tags
+        and "identity_state:affirmed" in fact.tags
+    )
+    religion_revoked = next(
+        fact
+        for fact in extracted
+        if fact.category is FactCategory.IDENTITY
+        and "identity_slot:religion" in fact.tags
+        and "identity_state:revoked" in fact.tags
+    )
+    uncertain_identity = next(
+        fact
+        for fact in extracted
+        if fact.category is FactCategory.IDENTITY
+        and "identity_state:uncertain" in fact.tags
+    )
+
+    assert "religion is hindu" in religion_affirmed.content.lower()
+    assert "religion is not hindu" in religion_revoked.content.lower()
+    assert "may be" in uncertain_identity.content.lower()
+    assert "marwari" in uncertain_identity.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_facts_keeps_conflicting_identity_lifecycle_rows_separate() -> None:
+    transport = InMemoryTransport()
+    existing_time = _utcnow() - timedelta(days=1)
+    existing = Fact(
+        id=uuid4(),
+        content="User's religion is hindu.",
+        category=FactCategory.IDENTITY,
+        confidence=0.88,
+        event_time=existing_time,
+        transaction_time=existing_time,
+        is_active=True,
+        source_episode_ids=[],
+        access_count=0,
+        tags=["identity", "identity_slot:religion", "identity_state:affirmed"],
+        created_at=existing_time,
+        updated_at=existing_time,
+    )
+    await transport.insert_fact(existing)
+
+    new_turn = _make_turn("my religion is not hindu", minutes_ago=1)
+    stored = await extract_and_store_facts(transport, [new_turn], now=_utcnow())
+
+    assert len(stored) == 1
+    assert len(transport.facts) == 2
+    assert any("identity_state:revoked" in fact.tags for fact in transport.facts.values())

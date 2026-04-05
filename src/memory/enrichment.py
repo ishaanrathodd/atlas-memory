@@ -150,6 +150,15 @@ _ALWAYS_ON_DIRECTIVE_HINTS = (
     "language",
     "wording",
 )
+_CANONICAL_IDENTITY_SLOT_ORDER = (
+    "name",
+    "religion",
+    "origin",
+    "location",
+    "role",
+    "employer",
+    "identity",
+)
 
 
 def _normalize_text(value: str, *, max_length: int = 240) -> str:
@@ -1747,23 +1756,96 @@ def _extract_requested_iso_week(value: str) -> tuple[int, int] | None:
     return year, week
 
 
-def _identity_slot_key(content: str) -> tuple[int, str]:
+def _tag_value(tags: Sequence[str], prefix: str) -> str | None:
+    normalized_prefix = prefix.lower()
+    for tag in tags:
+        lowered = str(tag).strip().lower()
+        if lowered.startswith(normalized_prefix):
+            value = lowered[len(normalized_prefix):].strip()
+            return value or None
+    return None
+
+
+def _identity_slot_from_content(content: str) -> str:
     lowered = content.lower()
-    if lowered.startswith("user's name is"):
-        return (0, "name")
-    if lowered.startswith("user's religion is"):
-        return (1, "religion")
-    if lowered.startswith("user is from"):
-        return (2, "origin")
-    if lowered.startswith("user lives in"):
-        return (3, "location")
-    if lowered.startswith("user works as"):
-        return (4, "role")
-    if lowered.startswith("user works at"):
-        return (5, "employer")
-    if lowered.startswith("user is"):
-        return (6, "identity")
-    return (7, "identity-other")
+    if lowered.startswith("user's name"):
+        return "name"
+    if lowered.startswith("user's religion"):
+        return "religion"
+    if lowered.startswith("user is from") or lowered.startswith("user is not from"):
+        return "origin"
+    if lowered.startswith("user lives in") or lowered.startswith("user does not live in"):
+        return "location"
+    if lowered.startswith("user works as") or lowered.startswith("user does not work as"):
+        return "role"
+    if lowered.startswith("user works at") or lowered.startswith("user does not work at"):
+        return "employer"
+    if lowered.startswith("user is") or lowered.startswith("user may be"):
+        return "identity"
+    return "identity"
+
+
+def _identity_slot_from_fact(fact: Fact) -> str:
+    tagged_slot = _tag_value(fact.tags, "identity_slot:")
+    if tagged_slot:
+        return tagged_slot
+    return _identity_slot_from_content(_clean_fact_content(fact))
+
+
+def _identity_state_from_fact(fact: Fact) -> str:
+    tagged_state = _tag_value(fact.tags, "identity_state:")
+    if tagged_state in {"affirmed", "revoked", "uncertain"}:
+        return tagged_state
+    lowered_tags = {str(tag).strip().lower() for tag in fact.tags}
+    if "identity_revoked" in lowered_tags:
+        return "revoked"
+    if "identity_uncertain" in lowered_tags:
+        return "uncertain"
+    lowered = _clean_fact_content(fact).lower()
+    if any(marker in lowered for marker in (" is not ", " does not ")):
+        return "revoked"
+    if any(marker in lowered for marker in (" may be ", " not sure", " uncertain")):
+        return "uncertain"
+    return "affirmed"
+
+
+def _identity_value_from_fact(fact: Fact, slot: str, state: str) -> str:
+    text = _clean_fact_content(fact)
+    lowered = text.lower()
+    prefixes = []
+    if state == "affirmed":
+        prefixes = {
+            "name": ["user's name is "],
+            "religion": ["user's religion is "],
+            "origin": ["user is from "],
+            "location": ["user lives in "],
+            "role": ["user works as "],
+            "employer": ["user works at "],
+            "identity": ["user is a ", "user is "],
+        }.get(slot, ["user is "])
+    elif state == "revoked":
+        prefixes = {
+            "religion": ["user's religion is not "],
+            "origin": ["user is not from "],
+            "location": ["user does not live in "],
+            "role": ["user does not work as "],
+            "employer": ["user does not work at "],
+            "identity": ["user is not "],
+        }.get(slot, ["user is not "])
+    else:
+        prefixes = {
+            "religion": ["user may follow "],
+            "origin": ["user may be from "],
+            "location": ["user may live in "],
+            "role": ["user may work as "],
+            "employer": ["user may work at "],
+            "identity": ["user may be "],
+        }.get(slot, ["user may be "])
+
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            return text[len(prefix):].strip()
+    return text
 
 
 def _always_on_fact_min_tokens(fact: Fact) -> int:
@@ -1774,6 +1856,20 @@ def _always_on_fact_min_tokens(fact: Fact) -> int:
     if fact.category is FactCategory.RELATIONSHIP:
         return 3
     return 4
+
+
+def _looks_like_communication_preference(text: str) -> bool:
+    lowered = text.lower()
+    markers = _ALWAYS_ON_DIRECTIVE_HINTS + (
+        "reply",
+        "replies",
+        "response",
+        "respond",
+        "communication",
+        "concise",
+        "direct",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 def _build_always_on_identity_lines(
@@ -1798,21 +1894,88 @@ def _build_always_on_identity_lines(
     )
 
     lines: list[str] = []
-    used_slots: set[str] = set()
     seen_lines: set[str] = set()
-    for fact in ranked_facts:
-        cleaned = _clean_fact_content(fact)
-        slot_priority, slot = _identity_slot_key(cleaned)
-        if fact.category is FactCategory.IDENTITY and slot in used_slots:
+
+    identity_facts = [fact for fact in ranked_facts if fact.category is FactCategory.IDENTITY]
+    slot_groups: dict[str, list[Fact]] = {}
+    for fact in identity_facts:
+        slot_groups.setdefault(_identity_slot_from_fact(fact), []).append(fact)
+
+    ordered_slots = [*list(_CANONICAL_IDENTITY_SLOT_ORDER), *sorted(slot for slot in slot_groups.keys() if slot not in _CANONICAL_IDENTITY_SLOT_ORDER)]
+    for slot in ordered_slots:
+        facts_for_slot = sorted(
+            slot_groups.get(slot, []),
+            key=lambda fact: (
+                float(fact.confidence),
+                _sort_datetime(fact.updated_at or fact.created_at),
+            ),
+            reverse=True,
+        )
+        if not facts_for_slot:
             continue
-        fingerprint = f"{slot_priority}:{slot}:{' '.join(cleaned.lower().split())}"
+
+        latest_by_state: dict[str, tuple[Fact, str]] = {}
+        affirmed_values: list[tuple[Fact, str]] = []
+        for fact in facts_for_slot:
+            state = _identity_state_from_fact(fact)
+            value = _identity_value_from_fact(fact, slot, state)
+            if not value:
+                continue
+            if state not in latest_by_state:
+                latest_by_state[state] = (fact, value)
+            if state == "affirmed":
+                affirmed_values.append((fact, value))
+
+        latest_affirmed = latest_by_state.get("affirmed")
+        latest_revoked = latest_by_state.get("revoked")
+        latest_uncertain = latest_by_state.get("uncertain")
+
+        line: str | None = None
+        if latest_revoked is not None:
+            revoked_fact, revoked_value = latest_revoked
+            revoked_time = _sort_datetime(revoked_fact.updated_at or revoked_fact.created_at)
+            affirmed_time = _sort_datetime((latest_affirmed[0].updated_at if latest_affirmed else None) or (latest_affirmed[0].created_at if latest_affirmed else None))
+            if latest_affirmed is None or revoked_time >= affirmed_time:
+                line = f"[{slot}] revoked: {revoked_value}"
+                if latest_affirmed is not None and latest_affirmed[1].lower() != revoked_value.lower():
+                    line += f" (previously: {latest_affirmed[1]})"
+
+        if line is None and latest_affirmed is not None:
+            affirmed_value = latest_affirmed[1]
+            normalized = affirmed_value.lower()
+            confirmations = sum(1 for _fact, value in affirmed_values if value.lower() == normalized)
+            line = f"[{slot}] {'confirmed' if confirmations >= 2 else 'active'}: {affirmed_value}"
+            superseded = next((value for _fact, value in affirmed_values if value.lower() != normalized), None)
+            if superseded:
+                line += f" (superseded: {superseded})"
+
+        if line is None and latest_uncertain is not None:
+            line = f"[{slot}] uncertain: {latest_uncertain[1]}"
+
+        if line is None:
+            continue
+        fingerprint = " ".join(line.lower().split())
         if fingerprint in seen_lines:
             continue
         seen_lines.add(fingerprint)
-        if fact.category is FactCategory.IDENTITY:
-            used_slots.add(slot)
-        lines.append(cleaned)
+        lines.append(line)
         if len(lines) >= MAX_ALWAYS_ON_IDENTITY_LINES:
+            return lines
+
+    preference_lines: list[str] = []
+    for fact in ranked_facts:
+        if fact.category is not FactCategory.PREFERENCE:
+            continue
+        cleaned = _clean_fact_content(fact)
+        if not _looks_like_communication_preference(cleaned):
+            continue
+        line = f"[communication] active: {cleaned}"
+        normalized = " ".join(line.lower().split())
+        if normalized in seen_lines:
+            continue
+        seen_lines.add(normalized)
+        preference_lines.append(line)
+        if len(preference_lines) >= 2:
             break
 
     directive_lines: list[str] = []
@@ -1829,7 +1992,7 @@ def _build_always_on_identity_lines(
         lowered = directive.content.lower()
         if not any(marker in lowered for marker in _ALWAYS_ON_DIRECTIVE_HINTS):
             continue
-        rendered = f"Communication directive: {_normalize_text(directive.content, max_length=220)}"
+        rendered = f"[communication] directive: {_normalize_text(directive.content, max_length=220)}"
         normalized = " ".join(rendered.lower().split())
         if normalized in seen_lines:
             continue
@@ -1838,7 +2001,7 @@ def _build_always_on_identity_lines(
         if len(directive_lines) >= 2:
             break
 
-    return (lines + directive_lines)[:MAX_ALWAYS_ON_IDENTITY_LINES]
+    return (lines + preference_lines + directive_lines)[:MAX_ALWAYS_ON_IDENTITY_LINES]
 
 
 def _timeline_event_matches_iso_week(event: TimelineEvent, *, year: int, week: int) -> bool:
