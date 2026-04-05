@@ -52,3 +52,127 @@ jobs:
           if not report.get("meets_threshold", False):
             sys.exit(1)
           PY
+
+      - name: Run long-horizon replay eval gate
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          import asyncio
+          import json
+          import sys
+
+          from memory.eval_harness import run_replay_eval
+
+          report = asyncio.run(
+            run_replay_eval(
+              scenarios_file="tests/fixtures/replay_eval_long_horizon_scenarios.json",
+              min_pass_rate=1.0,
+            )
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          if not report.get("meets_threshold", False):
+            sys.exit(1)
+          min_slot_rate = 1.0
+          slot_scores = report.get("identity_slot_scores", {})
+          failing_slots = {
+            slot: score
+            for slot, score in slot_scores.items()
+            if int(score.get("required", 0)) > 0 and float(score.get("pass_rate", 0.0)) < min_slot_rate
+          }
+          if failing_slots:
+            print("Long-horizon slot continuity regression:")
+            print(json.dumps(failing_slots, indent=2, sort_keys=True))
+            sys.exit(1)
+          PY
+
+      - name: Run identity continuity replay eval gate
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          import asyncio
+          import json
+          import sys
+
+          from memory.eval_harness import run_replay_eval
+
+          report = asyncio.run(
+            run_replay_eval(
+              scenarios_file="tests/fixtures/replay_eval_identity_scenarios.json",
+              min_pass_rate=1.0,
+            )
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          if not report.get("meets_threshold", False):
+            sys.exit(1)
+          min_slot_rate = 1.0
+          slot_scores = report.get("identity_slot_scores", {})
+          failing_slots = {
+            slot: score
+            for slot, score in slot_scores.items()
+            if int(score.get("required", 0)) > 0 and float(score.get("pass_rate", 0.0)) < min_slot_rate
+          }
+          if failing_slots:
+            print("Identity slot continuity regression:")
+            print(json.dumps(failing_slots, indent=2, sort_keys=True))
+            sys.exit(1)
+          PY
+
+      - name: Run identity continuity edge-case replay eval gate
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          import asyncio
+          import json
+          import sys
+
+          from memory.eval_harness import run_replay_eval
+
+          report = asyncio.run(
+            run_replay_eval(
+              scenarios_file="tests/fixtures/replay_eval_identity_edge_scenarios.json",
+              min_pass_rate=1.0,
+            )
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          if not report.get("meets_threshold", False):
+            sys.exit(1)
+          min_slot_rate = 1.0
+          slot_scores = report.get("identity_slot_scores", {})
+          failing_slots = {
+            slot: score
+            for slot, score in slot_scores.items()
+            if int(score.get("required", 0)) > 0 and float(score.get("pass_rate", 0.0)) < min_slot_rate
+          }
+          if failing_slots:
+            print("Identity slot continuity regression (edge-cases):")
+            print(json.dumps(failing_slots, indent=2, sort_keys=True))
+            sys.exit(1)
+          PY
+
+      - name: Run identity continuity adversarial replay eval gate
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          import asyncio
+          import json
+          import sys
+
+          from memory.eval_harness import run_replay_eval
+
+          report = asyncio.run(
+            run_replay_eval(
+              scenarios_file="tests/fixtures/replay_eval_identity_adversarial_scenarios.json",
+              min_pass_rate=1.0,
+            )
+          )
+          print(json.dumps(report, indent=2, sort_keys=True))
+          if not report.get("meets_threshold", False):
+            sys.exit(1)
+          min_slot_rate = 1.0
+          slot_scores = report.get("identity_slot_scores", {})
+          failing_slots = {
+            slot: score
+            for slot, score in slot_scores.items()
+            if int(score.get("required", 0)) > 0 and float(score.get("pass_rate", 0.0)) < min_slot_rate
+          }
+          if failing_slots:
+            print("Identity slot continuity regression (adversarial):")
+            print(json.dumps(failing_slots, indent=2, sort_keys=True))
+            sys.exit(1)
+          PY

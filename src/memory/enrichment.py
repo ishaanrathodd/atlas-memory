@@ -1860,14 +1860,28 @@ def _always_on_fact_min_tokens(fact: Fact) -> int:
 
 def _looks_like_communication_preference(text: str) -> bool:
     lowered = text.lower()
-    markers = _ALWAYS_ON_DIRECTIVE_HINTS + (
+    markers = (
         "reply",
         "replies",
+        "answer",
+        "answers",
         "response",
+        "responses",
         "respond",
         "communication",
         "concise",
         "direct",
+        "brief",
+        "short",
+        "detailed",
+        "formal",
+        "casual",
+        "bullet",
+        "bullets",
+        "tone",
+        "style",
+        "language",
+        "wording",
     )
     return any(marker in lowered for marker in markers)
 

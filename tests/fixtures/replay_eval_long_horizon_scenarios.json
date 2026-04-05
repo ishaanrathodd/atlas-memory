@@ -1,0 +1,279 @@
+[
+  {
+    "id": "long_horizon_outcome_grounding_for_advice",
+    "description": "Advice prompts should ground recommendations in older outcomes and habits.",
+    "user_message": "I need a rollout strategy for reliability this quarter.",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "Use canary checks before full rollout",
+      "root-cause debugging"
+    ],
+    "min_counts": {
+      "facts": 1,
+      "decision_outcomes": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User prefers root-cause debugging before broad patches.",
+          "category": "habit",
+          "tags": ["debugging", "reliability"],
+          "confidence": 0.93,
+          "created_at": "2024-01-05T00:00:00Z",
+          "updated_at": "2024-01-05T00:00:00Z"
+        }
+      ],
+      "decision_outcomes": [
+        {
+          "kind": "workflow",
+          "status": "success",
+          "decision": "Added staged rollout checks.",
+          "outcome": "Incidents dropped after canary validation.",
+          "lesson": "Use canary checks before full rollout.",
+          "importance_score": 0.92,
+          "confidence": 0.9,
+          "event_time": "2024-02-10T00:00:00Z",
+          "tags": ["reliability", "rollout"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "long_horizon_exact_recall_excludes_active_session",
+    "description": "Exact recall should retrieve prior-session verbatim user text while excluding active session turns.",
+    "user_message": "before this session what were my last few texts to you?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "active_session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "expect_contains": [
+      "Exact recent user messages (verbatim):",
+      "memory regression gate must be strict",
+      "add replay before shipping"
+    ],
+    "expect_not_contains": [
+      "this active-session text must not leak"
+    ],
+    "min_counts": {
+      "relevant_episodes": 2,
+      "exact_recall_mode": 1
+    },
+    "seed": {
+      "sessions": [
+        {
+          "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "agent_namespace": "main",
+          "platform": "telegram",
+          "started_at": "2026-04-05T10:00:00Z",
+          "message_count": 2,
+          "user_message_count": 1
+        },
+        {
+          "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "agent_namespace": "main",
+          "platform": "telegram",
+          "started_at": "2025-11-05T10:00:00Z",
+          "ended_at": "2025-11-05T10:30:00Z",
+          "message_count": 8,
+          "user_message_count": 4
+        }
+      ],
+      "episodes": [
+        {
+          "session_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "agent_namespace": "main",
+          "role": "user",
+          "content": "memory regression gate must be strict",
+          "platform": "telegram",
+          "message_timestamp": "2025-11-05T10:20:00Z"
+        },
+        {
+          "session_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "agent_namespace": "main",
+          "role": "user",
+          "content": "add replay before shipping",
+          "platform": "telegram",
+          "message_timestamp": "2025-11-05T10:25:00Z"
+        },
+        {
+          "session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "agent_namespace": "main",
+          "role": "user",
+          "content": "this active-session text must not leak",
+          "platform": "telegram",
+          "message_timestamp": "2026-04-05T10:01:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "long_horizon_week_query_targets_requested_week",
+    "description": "Week-number lookups should select the requested ISO week from long-horizon timeline history.",
+    "user_message": "what was the main topic in week 11 of 2025?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "replay fidelity and long-horizon continuity"
+    ],
+    "expect_not_contains": [
+      "focus split across infra migrations"
+    ],
+    "min_counts": {
+      "timeline_events": 1
+    },
+    "seed": {
+      "timeline_events": [
+        {
+          "agent_namespace": "main",
+          "kind": "week_summary",
+          "title": "Week of 2025-03-10",
+          "summary": "The main recurring topic was replay fidelity and long-horizon continuity.",
+          "event_key": "eval:timeline:week12-2025",
+          "event_time": "2025-03-13T09:00:00Z",
+          "tags": ["week-summary", "memory"],
+          "importance_score": 0.86
+        },
+        {
+          "agent_namespace": "main",
+          "kind": "week_summary",
+          "title": "Week of 2025-03-17",
+          "summary": "Focus split across infra migrations and packaging tasks.",
+          "event_key": "eval:timeline:week13-2025",
+          "event_time": "2025-03-20T09:00:00Z",
+          "tags": ["week-summary"],
+          "importance_score": 0.74
+        }
+      ]
+    }
+  },
+  {
+    "id": "long_horizon_proactive_coach_reuses_failures",
+    "description": "Execution prompts should surface prior failure mode plus proven alternative from older outcomes.",
+    "user_message": "I am executing checkout migration rollout now, what path should I take?",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "Proactive coach notes:",
+      "Past risk to avoid:",
+      "Proven better path:"
+    ],
+    "min_counts": {
+      "proactive_coach_lines": 2,
+      "decision_outcomes": 1
+    },
+    "seed": {
+      "decision_outcomes": [
+        {
+          "agent_namespace": "main",
+          "kind": "workflow",
+          "status": "failure",
+          "decision": "Rushed checkout rollout without replay checks.",
+          "outcome": "Regression and rollback took two days.",
+          "lesson": "Run replay-eval and canary checks before broad traffic.",
+          "importance_score": 0.96,
+          "confidence": 0.95,
+          "event_time": "2024-09-10T00:00:00Z",
+          "tags": ["checkout", "migration", "rollout"]
+        },
+        {
+          "agent_namespace": "main",
+          "kind": "workflow",
+          "status": "success",
+          "decision": "Staged checkout rollout with replay and canary.",
+          "outcome": "Reduced rollback risk and no major regressions.",
+          "lesson": "Start canary, validate replay coverage, then gradual ramp.",
+          "importance_score": 0.93,
+          "confidence": 0.92,
+          "event_time": "2025-02-14T00:00:00Z",
+          "tags": ["checkout", "migration", "rollout"]
+        }
+      ],
+      "patterns": [
+        {
+          "agent_namespace": "main",
+          "pattern_type": "trap",
+          "statement": "Deadline pressure can outrun verification depth.",
+          "description": "Recurring trap across multiple rollout cycles.",
+          "pattern_key": "eval:pattern:deadline-verification-trap",
+          "confidence": 0.9,
+          "frequency_score": 0.84,
+          "impact_score": 0.9,
+          "first_observed_at": "2024-05-01T00:00:00Z",
+          "last_observed_at": "2025-02-14T00:00:00Z",
+          "tags": ["rollout", "verification", "deadline"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "long_horizon_identity_and_goal_persist",
+    "description": "Always-known profile should survive long-horizon gaps for unrelated planning prompts.",
+    "user_message": "help me plan my execution path for today",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "Always-known user profile:",
+      "solo founder building Upstorr",
+      "always-on assistant for life and work"
+    ],
+    "min_counts": {
+      "core_profile_lines": 2
+    },
+    "seed": {
+      "facts": [
+        {
+          "agent_namespace": "main",
+          "content": "Ishaan is a solo founder building Upstorr and optimizing AI-assisted workflows.",
+          "category": "identity",
+          "tags": ["identity", "career"],
+          "confidence": 0.95,
+          "created_at": "2023-07-01T00:00:00Z",
+          "updated_at": "2023-07-01T00:00:00Z"
+        },
+        {
+          "agent_namespace": "main",
+          "content": "Current long-term goal is building a reliable always-on assistant for life and work.",
+          "category": "goal",
+          "tags": ["assistant", "long-term"],
+          "confidence": 0.93,
+          "created_at": "2023-07-01T00:00:00Z",
+          "updated_at": "2023-07-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "long_horizon_identity_timeline_drift_stable",
+    "description": "Old and new identity evidence should preserve latest active value with superseded trace.",
+    "user_message": "what do you know about my work identity now",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[role] active: founder",
+      "superseded: engineer"
+    ],
+    "identity_slot_expectations": {
+      "role": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User works as engineer.",
+          "category": "identity",
+          "confidence": 0.87,
+          "tags": ["identity", "identity_slot:role", "identity_state:affirmed"],
+          "created_at": "2021-01-01T00:00:00Z",
+          "updated_at": "2021-01-01T00:00:00Z"
+        },
+        {
+          "content": "User works as founder.",
+          "category": "identity",
+          "confidence": 0.94,
+          "tags": ["identity", "identity_slot:role", "identity_state:affirmed"],
+          "created_at": "2026-01-01T00:00:00Z",
+          "updated_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    }
+  }
+]

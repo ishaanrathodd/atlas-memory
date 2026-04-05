@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,8 @@ from memory.models import (
 
 
 DEFAULT_SCENARIOS_PATH = Path("tests/fixtures/replay_eval_scenarios.json")
+_IDENTITY_LINE_RE = re.compile(r"^\[(name|religion|origin|location|role|employer|identity|communication)\]\s+(active|confirmed|revoked|uncertain|directive):", re.IGNORECASE)
+_IDENTITY_EXPECT_CONTAINS_RE = re.compile(r"\[(name|religion|origin|location|role|employer|identity)\]\s+(active|confirmed|revoked|uncertain):", re.IGNORECASE)
 
 
 def _utcnow() -> datetime:
@@ -90,7 +93,23 @@ class ReplayScenario(MemoryBaseModel):
     expect_contains: list[str] = Field(default_factory=list)
     expect_not_contains: list[str] = Field(default_factory=list)
     min_counts: dict[str, int] = Field(default_factory=dict)
+    identity_slot_expectations: dict[str, str] = Field(default_factory=dict)
     seed: dict[str, Any] = Field(default_factory=dict)
+
+
+def _identity_expectations_for_scenario(scenario: ReplayScenario) -> dict[str, str]:
+    inferred_identity_expectations: dict[str, str] = {}
+    for expected in scenario.expect_contains:
+        match = _IDENTITY_EXPECT_CONTAINS_RE.search(str(expected))
+        if not match:
+            continue
+        inferred_identity_expectations[match.group(1).lower()] = match.group(2).lower()
+
+    explicit_identity_expectations = {
+        str(slot).strip().lower(): str(state).strip().lower()
+        for slot, state in scenario.identity_slot_expectations.items()
+    }
+    return {**inferred_identity_expectations, **explicit_identity_expectations}
 
 
 class _EvalTransport:
@@ -155,6 +174,7 @@ class _EvalTransport:
 
         for item in seed.get("facts", []):
             event_time = _parse_dt(item.get("event_time"), default=now)
+            created_at = _parse_dt(item.get("created_at"), default=event_time)
             fact = Fact(
                 id=_parse_optional_uuid(item.get("id")) or uuid4(),
                 agent_namespace=item.get("agent_namespace", default_namespace),
@@ -168,6 +188,8 @@ class _EvalTransport:
                 access_count=int(item.get("access_count", 0)),
                 last_accessed_at=_parse_dt(item.get("last_accessed_at"), default=event_time),
                 tags=list(item.get("tags", [])),
+                created_at=created_at,
+                updated_at=_parse_dt(item.get("updated_at"), default=created_at),
             )
             transport.facts.append(fact)
 
@@ -195,7 +217,7 @@ class _EvalTransport:
             directive = Directive(
                 id=_parse_optional_uuid(item.get("id")) or uuid4(),
                 agent_namespace=item.get("agent_namespace", default_namespace),
-                kind=DirectiveKind(item.get("kind", DirectiveKind.OTHER.value)),
+                kind=DirectiveKind(item.get("kind", DirectiveKind.COMMUNICATION.value)),
                 scope=DirectiveScope(item.get("scope", DirectiveScope.GLOBAL.value)),
                 title=item.get("title"),
                 content=str(item.get("content", "")),
@@ -503,6 +525,29 @@ async def evaluate_replay_scenario(scenario: ReplayScenario) -> dict[str, Any]:
         matched = str(blocked).lower() not in lowered
         checks.append({"kind": "not_contains", "value": blocked, "passed": matched})
 
+    observed_identity_slot_states: dict[str, set[str]] = {}
+    for line in payload.always_on_identity_lines:
+        match = _IDENTITY_LINE_RE.match(str(line).strip())
+        if not match:
+            continue
+        slot = match.group(1).lower()
+        state = match.group(2).lower()
+        observed_identity_slot_states.setdefault(slot, set()).add(state)
+
+    identity_expectations = _identity_expectations_for_scenario(scenario)
+    for slot, expected_state in identity_expectations.items():
+        observed_states = sorted(observed_identity_slot_states.get(slot, set()))
+        passed = expected_state in observed_states
+        checks.append(
+            {
+                "kind": "identity_slot",
+                "slot": slot,
+                "expected_state": expected_state,
+                "observed_states": observed_states,
+                "passed": passed,
+            }
+        )
+
     count_values = {
         "facts": len(payload.facts),
         "directives": len(payload.directives),
@@ -512,6 +557,7 @@ async def evaluate_replay_scenario(scenario: ReplayScenario) -> dict[str, Any]:
         "timeline_events": len(payload.timeline_events),
         "commitments": len(payload.commitments),
         "active_state_lines": len(payload.active_state_lines),
+        "always_on_identity_lines": len(payload.always_on_identity_lines),
         "core_profile_lines": len(payload.core_profile_lines),
         "life_trajectory_lines": len(payload.life_trajectory_lines),
         "proactive_coach_lines": len(payload.proactive_coach_lines),
@@ -544,6 +590,10 @@ async def evaluate_replay_scenario(scenario: ReplayScenario) -> dict[str, Any]:
         "checks_passed": len(checks) - len(failed),
         "checks_failed": failed,
         "counts": count_values,
+        "identity_slot_observed": {
+            slot: sorted(states)
+            for slot, states in observed_identity_slot_states.items()
+        },
     }
 
 
@@ -570,6 +620,34 @@ async def run_replay_eval(
     failed = total - passed
     pass_rate = (float(passed) / float(total)) if total else 0.0
 
+    scenario_by_id = {scenario.id: scenario for scenario in scenarios}
+    result_by_id = {str(result.get("scenario_id")): result for result in results}
+    slot_scores = {}
+    for scenario_id, scenario in scenario_by_id.items():
+        expected = _identity_expectations_for_scenario(scenario)
+        if not expected:
+            continue
+        result = result_by_id.get(scenario_id) or {}
+        failed_identity = {
+            (str(check.get("slot") or "").strip().lower(), str(check.get("expected_state") or "").strip().lower())
+            for check in result.get("checks_failed", [])
+            if check.get("kind") == "identity_slot"
+        }
+        for slot, state in expected.items():
+            bucket = slot_scores.setdefault(slot, {"required": 0, "passed": 0})
+            bucket["required"] += 1
+            if (slot, state) not in failed_identity:
+                bucket["passed"] += 1
+
+    identity_slot_scores = {
+        slot: {
+            "required": int(values["required"]),
+            "passed": int(values["passed"]),
+            "pass_rate": round((float(values["passed"]) / float(values["required"])) if int(values["required"]) else 0.0, 6),
+        }
+        for slot, values in sorted(slot_scores.items())
+    }
+
     return {
         "task": "replay-eval",
         "total": total,
@@ -578,6 +656,7 @@ async def run_replay_eval(
         "pass_rate": round(pass_rate, 6),
         "min_pass_rate": float(min_pass_rate),
         "meets_threshold": pass_rate >= float(min_pass_rate),
+        "identity_slot_scores": identity_slot_scores,
         "failed_scenarios": [
             {
                 "scenario_id": item.get("scenario_id"),

@@ -1,0 +1,356 @@
+[
+  {
+    "id": "adv_temporal_inversion_newer_revoked_wins",
+    "description": "Newer revoked evidence should override older affirmed evidence even if affirmed has higher confidence.",
+    "user_message": "what should you remember about me",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[religion] revoked: jain"
+    ],
+    "expect_not_contains": [
+      "[religion] active: jain"
+    ],
+    "identity_slot_expectations": {
+      "religion": "revoked"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is jain.",
+          "category": "identity",
+          "confidence": 0.98,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"],
+          "updated_at": "2024-01-01T00:00:00Z"
+        },
+        {
+          "content": "User's religion is not jain.",
+          "category": "identity",
+          "confidence": 0.73,
+          "tags": ["identity", "identity_slot:religion", "identity_state:revoked"],
+          "updated_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_temporal_inversion_newer_affirmed_restores_active",
+    "description": "Newer affirmed evidence should restore active state over older revoked evidence.",
+    "user_message": "quick profile check",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[religion] active: hindu"
+    ],
+    "expect_not_contains": [
+      "[religion] revoked: hindu"
+    ],
+    "identity_slot_expectations": {
+      "religion": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is not hindu.",
+          "category": "identity",
+          "confidence": 0.96,
+          "tags": ["identity", "identity_slot:religion", "identity_state:revoked"],
+          "updated_at": "2024-02-01T00:00:00Z"
+        },
+        {
+          "content": "User's religion is hindu.",
+          "category": "identity",
+          "confidence": 0.77,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"],
+          "updated_at": "2026-03-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_cross_session_chain_employer_superseded",
+    "description": "Multiple affirmed employer values across time should keep latest active and older superseded.",
+    "user_message": "continue with context",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[employer] active: upstorr",
+      "superseded: acme labs"
+    ],
+    "identity_slot_expectations": {
+      "employer": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User works at Acme Labs.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:employer", "identity_state:affirmed"],
+          "updated_at": "2025-01-10T00:00:00Z"
+        },
+        {
+          "content": "User works at Upstorr.",
+          "category": "identity",
+          "confidence": 0.94,
+          "tags": ["identity", "identity_slot:employer", "identity_state:affirmed"],
+          "updated_at": "2026-02-10T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_confirmed_requires_duplicate_affirmations",
+    "description": "Two matching affirmed facts should yield confirmed state.",
+    "user_message": "what is stable",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[name] confirmed: ishaan"
+    ],
+    "identity_slot_expectations": {
+      "name": "confirmed"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's name is Ishaan.",
+          "category": "identity",
+          "confidence": 0.89,
+          "tags": ["identity", "identity_slot:name", "identity_state:affirmed"],
+          "updated_at": "2025-02-01T00:00:00Z"
+        },
+        {
+          "content": "User's name is Ishaan.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:name", "identity_state:affirmed"],
+          "updated_at": "2026-02-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_uncertain_visible_without_affirmed",
+    "description": "Uncertain state should surface when only uncertain evidence exists.",
+    "user_message": "what are you unsure about",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[origin] uncertain: jaipur"
+    ],
+    "identity_slot_expectations": {
+      "origin": "uncertain"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User may be from Jaipur.",
+          "category": "identity",
+          "confidence": 0.61,
+          "tags": ["identity", "identity_slot:origin", "identity_state:uncertain"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_content_inference_for_state_and_slot",
+    "description": "Slot and revoked state should be inferred from content when tags are absent.",
+    "user_message": "what changed",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[location] revoked: mumbai"
+    ],
+    "identity_slot_expectations": {
+      "location": "revoked"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User does not live in Mumbai.",
+          "category": "identity",
+          "confidence": 0.86,
+          "tags": ["identity"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_created_at_only_ordering",
+    "description": "When updated_at is absent, created_at should drive deterministic ordering.",
+    "user_message": "refresh profile",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[role] active: founder"
+    ],
+    "expect_not_contains": [
+      "[role] active: engineer"
+    ],
+    "identity_slot_expectations": {
+      "role": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User works as engineer.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:role", "identity_state:affirmed"],
+          "created_at": "2024-01-01T00:00:00Z"
+        },
+        {
+          "content": "User works as founder.",
+          "category": "identity",
+          "confidence": 0.91,
+          "tags": ["identity", "identity_slot:role", "identity_state:affirmed"],
+          "created_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_multi_slot_mixed_lifecycle",
+    "description": "Mixed lifecycle states across slots should all be retained simultaneously.",
+    "user_message": "give me the full continuity context",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[name] active: ishaan",
+      "[religion] revoked: hindu",
+      "[employer] uncertain: upstorr"
+    ],
+    "identity_slot_expectations": {
+      "name": "active",
+      "religion": "revoked",
+      "employer": "uncertain"
+    },
+    "min_counts": {
+      "always_on_identity_lines": 3
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's name is Ishaan.",
+          "category": "identity",
+          "confidence": 0.92,
+          "tags": ["identity", "identity_slot:name", "identity_state:affirmed"]
+        },
+        {
+          "content": "User's religion is not hindu.",
+          "category": "identity",
+          "confidence": 0.88,
+          "tags": ["identity", "identity_slot:religion", "identity_state:revoked"]
+        },
+        {
+          "content": "User may work at Upstorr.",
+          "category": "identity",
+          "confidence": 0.64,
+          "tags": ["identity", "identity_slot:employer", "identity_state:uncertain"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_communication_signal_survives_identity_conflict",
+    "description": "Communication preference should still be injected when identity facts conflict.",
+    "user_message": "help me respond",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[communication] active: user prefers concise direct responses"
+    ],
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is jain.",
+          "category": "identity",
+          "confidence": 0.86,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"],
+          "updated_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "content": "User's religion is not jain.",
+          "category": "identity",
+          "confidence": 0.86,
+          "tags": ["identity", "identity_slot:religion", "identity_state:revoked"],
+          "updated_at": "2026-01-01T00:00:00Z"
+        },
+        {
+          "content": "User prefers concise direct responses.",
+          "category": "preference",
+          "confidence": 0.93,
+          "tags": ["communication", "preference"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_non_comm_preference_filtered_under_pressure",
+    "description": "Non-communication preferences should remain filtered even with many other identity lines.",
+    "user_message": "continue",
+    "agent_namespace": "main",
+    "expect_not_contains": [
+      "[communication] active: user prefers masala chai"
+    ],
+    "seed": {
+      "facts": [
+        {
+          "content": "User's name is Ishaan.",
+          "category": "identity",
+          "confidence": 0.92,
+          "tags": ["identity", "identity_slot:name", "identity_state:affirmed"]
+        },
+        {
+          "content": "User works at Upstorr.",
+          "category": "identity",
+          "confidence": 0.93,
+          "tags": ["identity", "identity_slot:employer", "identity_state:affirmed"]
+        },
+        {
+          "content": "User prefers masala chai.",
+          "category": "preference",
+          "confidence": 0.95,
+          "tags": ["preference", "beverage"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_directive_memory_kind_promoted",
+    "description": "Memory directives with standing wording should appear as communication directives.",
+    "user_message": "before we proceed",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[communication] directive: Always preserve correction history and never drop contradictory evidence."
+    ],
+    "seed": {
+      "directives": [
+        {
+          "kind": "memory",
+          "scope": "global",
+          "status": "active",
+          "content": "Always preserve correction history and never drop contradictory evidence.",
+          "confidence": 0.96,
+          "priority_score": 1.0,
+          "tags": ["derived", "directive"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "adv_sparse_identity_guardrail",
+    "description": "If no identity evidence exists, sparse identity guidance should remain explicit.",
+    "user_message": "what should you know",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "identity is still sparse"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 0
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User completed migration validation yesterday.",
+          "category": "fact",
+          "confidence": 0.88,
+          "tags": ["work"]
+        }
+      ]
+    }
+  }
+]

@@ -16,7 +16,7 @@ It answers:
 ## Last Updated
 
 - Date: `2026-04-05`
-- Repository status: `green` (`194 passed, 10 skipped`)
+- Repository status: `green` (`198 passed, 10 skipped`)
 
 
 ## Executive Summary
@@ -320,7 +320,28 @@ Important:
   - deterministic slot model (`name`, `religion`, `origin`, `location`, `role`, `employer`, `identity`)
   - explicit lifecycle states (`active/confirmed`, `superseded`, `revoked`, `uncertain`)
   - contradiction-safe storage behavior (identity facts with conflicting lifecycle states are preserved as separate evidence)
-- validation: targeted lifecycle/enrichment suite `52 passed`; atlas full suite `194 passed, 10 skipped`
+- added identity continuity replay regression pack and CI gate:
+  - new fixture: `tests/fixtures/replay_eval_identity_scenarios.json` with `10` continuity scenarios
+  - strict threshold gate in CI (`min_pass_rate=1.0`) alongside existing replay eval gate
+  - eval harness now surfaces `always_on_identity_lines` count for quantitative continuity checks
+- expanded identity continuity hardening with edge-case replay and slot scoring:
+  - new fixture: `tests/fixtures/replay_eval_identity_edge_scenarios.json` with `14` edge-case scenarios (slot conflicts, revocation/reaffirmation ordering, sparse identity fallback, long-horizon drift)
+  - eval harness now supports seeded fact timestamps (`created_at`/`updated_at`) for deterministic long-horizon ordering tests
+  - eval report now includes per-slot continuity quality via `identity_slot_scores`
+  - CI now enforces slot-level pass thresholds (`1.0`) for both baseline identity fixture and edge-case identity fixture
+  - communication-preference promotion in always-on identity was tightened to avoid leaking non-communication preferences (for example: beverage preferences)
+- validation: replay harness tests `4 passed`; atlas full suite `196 passed, 10 skipped`
+- added adversarial continuity replay hardening focused on contradiction chains and temporal inversion:
+  - new fixture: `tests/fixtures/replay_eval_identity_adversarial_scenarios.json` with `12` adversarial scenarios (temporal inversion, cross-session contradiction chains, mixed lifecycle slots, sparse guardrails)
+  - replay eval regression tests now include baseline + edge-case + adversarial identity packs
+  - CI now runs a dedicated adversarial replay gate with slot-level pass threshold enforcement (`1.0`)
+- validation: replay harness tests `5 passed`; atlas full suite `197 passed, 10 skipped`
+- added long-horizon continuity replay suite and CI gate:
+  - new fixture: `tests/fixtures/replay_eval_long_horizon_scenarios.json` with `6` long-horizon scenarios (old outcome grounding, exact recall across sessions, week-targeted timeline recall, proactive coaching from older failures, long-horizon profile persistence)
+  - replay eval regression tests now include long-horizon suite alongside baseline + identity continuity packs
+  - CI now runs a dedicated long-horizon replay eval gate with slot-level threshold enforcement when identity slots are exercised
+  - schema decision: no schema changes required; this milestone is retrieval-eval and gating only
+- validation: replay harness tests `6 passed`; atlas full suite `198 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -391,7 +412,7 @@ Final Atlas is done when all are true:
 3. [x] define and migrate case-memory tables
 4. [x] make episode-first feature extraction the default memory processor path
 5. [x] add explicit always-on identity layer in enrichment context
-6. [ ] add long-horizon LLM eval suite (alongside deterministic replay)
+6. [x] add long-horizon eval suite baseline (deterministic replay + CI gate, LLM-in-loop ready)
 7. [x] complete canonical identity conflict-resolution lifecycle (confirm/supersede/revoke semantics)
 
 
@@ -430,6 +451,9 @@ Minimum files to load before implementation:
 - `atlas/tests/test_enrichment.py`
 - `atlas/tests/test_eval_harness.py`
 - `atlas/tests/fixtures/replay_eval_scenarios.json`
+- `atlas/tests/fixtures/replay_eval_long_horizon_scenarios.json`
+- `atlas/tests/fixtures/replay_eval_identity_edge_scenarios.json`
+- `atlas/tests/fixtures/replay_eval_identity_adversarial_scenarios.json`
 - `atlas/migrations/2026-04-03_memory_schema_transition.sql`
 - `atlas/migrations/2026-04-03_platform_text.sql`
 - `atlas/migrations/2026-04-03_agent_namespace_hardening.sql`
@@ -451,6 +475,7 @@ Read these files first:
 - atlas/tests/test_enrichment.py
 - atlas/tests/test_eval_harness.py
 - atlas/tests/fixtures/replay_eval_scenarios.json
+- atlas/tests/fixtures/replay_eval_long_horizon_scenarios.json
 - atlas/migrations/2026-04-03_memory_schema_transition.sql
 - atlas/migrations/2026-04-03_platform_text.sql
 - atlas/migrations/2026-04-03_agent_namespace_hardening.sql

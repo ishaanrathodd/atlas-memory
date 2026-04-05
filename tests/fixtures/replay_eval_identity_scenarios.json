@@ -1,0 +1,293 @@
+[
+  {
+    "id": "identity_active_religion",
+    "description": "Affirmed identity should appear as active in always-on identity layer.",
+    "user_message": "help me plan my day",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[religion] active: hindu"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is hindu.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity_confirmed_religion",
+    "description": "Repeated affirmed value should be marked confirmed.",
+    "user_message": "what should you remember about me",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[religion] confirmed: hindu"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is hindu.",
+          "category": "identity",
+          "confidence": 0.91,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"]
+        },
+        {
+          "content": "User's religion is hindu.",
+          "category": "identity",
+          "confidence": 0.92,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity_superseded_religion",
+    "description": "Latest affirmed value should supersede older affirmed value in same slot.",
+    "user_message": "give me context before we continue",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[religion] active: hindu",
+      "superseded: jain"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is jain.",
+          "category": "identity",
+          "confidence": 0.84,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"]
+        },
+        {
+          "content": "User's religion is hindu.",
+          "category": "identity",
+          "confidence": 0.95,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity_revoked_religion",
+    "description": "Revoked value should override affirmed value in same slot.",
+    "user_message": "summarize what is stable about me",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[religion] revoked: hindu"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is hindu.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"]
+        },
+        {
+          "content": "User's religion is not hindu.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:religion", "identity_state:revoked", "identity_revoked"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity_uncertain_no_affirmed",
+    "description": "Uncertain value should be surfaced when no affirmed value exists for slot.",
+    "user_message": "what do you know for sure",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[identity] uncertain: marwari"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User may be marwari.",
+          "category": "identity",
+          "confidence": 0.62,
+          "tags": ["identity", "identity_slot:identity", "identity_state:uncertain", "identity_uncertain"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity_active_name",
+    "description": "Name slot should be carried in always-on identity layer.",
+    "user_message": "help me with execution today",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[name] active: ishaan"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's name is Ishaan.",
+          "category": "identity",
+          "confidence": 0.94,
+          "tags": ["identity", "identity_slot:name", "identity_state:affirmed"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity_confirmed_origin",
+    "description": "Origin slot should become confirmed with repeated affirmed evidence.",
+    "user_message": "continue from previous context",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[origin] confirmed: a marwari family"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User is from a marwari family.",
+          "category": "identity",
+          "confidence": 0.89,
+          "tags": ["identity", "identity_slot:origin", "identity_state:affirmed"]
+        },
+        {
+          "content": "User is from a marwari family.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:origin", "identity_state:affirmed"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity_revoked_location",
+    "description": "Location revocation should surface and override older location.",
+    "user_message": "what context should guide your response",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[location] revoked: delhi"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User lives in delhi.",
+          "category": "identity",
+          "confidence": 0.88,
+          "tags": ["identity", "identity_slot:location", "identity_state:affirmed"]
+        },
+        {
+          "content": "User does not live in delhi.",
+          "category": "identity",
+          "confidence": 0.88,
+          "tags": ["identity", "identity_slot:location", "identity_state:revoked", "identity_revoked"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity_superseded_role",
+    "description": "Role slot should preserve latest active and show superseded older role.",
+    "user_message": "what are my stable traits",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[role] active: product builder",
+      "superseded: backend engineer"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User works as backend engineer.",
+          "category": "identity",
+          "confidence": 0.8,
+          "tags": ["identity", "identity_slot:role", "identity_state:affirmed"]
+        },
+        {
+          "content": "User works as product builder.",
+          "category": "identity",
+          "confidence": 0.93,
+          "tags": ["identity", "identity_slot:role", "identity_state:affirmed"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity_communication_directive_and_preference",
+    "description": "Always-on identity layer should include communication preference and standing directive.",
+    "user_message": "help me decide the next move",
+    "platform": "telegram",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[communication] active: user prefers concise and direct replies",
+      "[communication] directive: always keep replies concise and direct"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 2,
+      "directives": 1
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User prefers concise and direct replies.",
+          "category": "preference",
+          "confidence": 0.9,
+          "tags": ["communication", "preference"]
+        }
+      ],
+      "directives": [
+        {
+          "kind": "communication",
+          "scope": "global",
+          "status": "active",
+          "content": "Always keep replies concise and direct.",
+          "confidence": 0.95,
+          "priority_score": 1.0,
+          "tags": ["derived", "directive"]
+        }
+      ]
+    }
+  }
+]

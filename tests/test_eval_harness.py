@@ -67,3 +67,64 @@ async def test_run_replay_eval_fixture_passes_regression_gate():
     assert report["total"] >= 2
     assert report["failed"] == 0
     assert report["meets_threshold"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_replay_eval_identity_fixture_passes_regression_gate():
+    report = await run_replay_eval(
+        scenarios_file="tests/fixtures/replay_eval_identity_scenarios.json",
+        min_pass_rate=1.0,
+    )
+
+    assert report["total"] >= 10
+    assert report["failed"] == 0
+    assert report["meets_threshold"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_replay_eval_identity_edge_fixture_passes_regression_gate():
+    report = await run_replay_eval(
+        scenarios_file="tests/fixtures/replay_eval_identity_edge_scenarios.json",
+        min_pass_rate=1.0,
+    )
+
+    assert report["total"] >= 12
+    assert report["failed"] == 0
+    assert report["meets_threshold"] is True
+    assert report["identity_slot_scores"]
+    for slot, score in report["identity_slot_scores"].items():
+        assert score["required"] >= 1
+        assert score["pass_rate"] == 1.0, f"slot={slot} score={score}"
+
+
+@pytest.mark.asyncio
+async def test_run_replay_eval_identity_adversarial_fixture_passes_regression_gate():
+    report = await run_replay_eval(
+        scenarios_file="tests/fixtures/replay_eval_identity_adversarial_scenarios.json",
+        min_pass_rate=1.0,
+    )
+
+    assert report["total"] >= 10
+    assert report["failed"] == 0
+    assert report["meets_threshold"] is True
+    assert report["identity_slot_scores"]
+    for slot, score in report["identity_slot_scores"].items():
+        assert score["required"] >= 1
+        assert score["pass_rate"] == 1.0, f"slot={slot} score={score}"
+
+
+@pytest.mark.asyncio
+async def test_run_replay_eval_long_horizon_fixture_passes_regression_gate():
+    report = await run_replay_eval(
+        scenarios_file="tests/fixtures/replay_eval_long_horizon_scenarios.json",
+        min_pass_rate=1.0,
+    )
+
+    assert report["total"] >= 6
+    assert report["failed"] == 0
+    assert report["meets_threshold"] is True
+    slot_scores = report["identity_slot_scores"]
+    if slot_scores:
+        for slot, score in slot_scores.items():
+            assert score["required"] >= 1
+            assert score["pass_rate"] == 1.0, f"slot={slot} score={score}"

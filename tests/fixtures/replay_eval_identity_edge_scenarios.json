@@ -1,0 +1,382 @@
+[
+  {
+    "id": "edge_active_over_uncertain_same_slot",
+    "description": "Affirmed identity should beat uncertain state for the same slot.",
+    "user_message": "what should you keep in mind",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "[religion] active: hindu"
+    ],
+    "expect_not_contains": [
+      "[religion] uncertain"
+    ],
+    "identity_slot_expectations": {
+      "religion": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User may follow hindu.",
+          "category": "identity",
+          "confidence": 0.62,
+          "tags": ["identity", "identity_slot:religion", "identity_state:uncertain"]
+        },
+        {
+          "content": "User's religion is hindu.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_reaffirm_after_revocation",
+    "description": "New affirmed value after old revocation should restore active state.",
+    "user_message": "recall my stable profile",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[religion] active: hindu"
+    ],
+    "expect_not_contains": [
+      "[religion] revoked: hindu"
+    ],
+    "identity_slot_expectations": {
+      "religion": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is not hindu.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:religion", "identity_state:revoked"],
+          "updated_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "content": "User's religion is hindu.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"],
+          "updated_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_old_revocation_must_not_override_new_active",
+    "description": "Older revocation should not override newer affirmed evidence.",
+    "user_message": "summarize known identity",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[religion] active: jain"
+    ],
+    "expect_not_contains": [
+      "[religion] revoked"
+    ],
+    "identity_slot_expectations": {
+      "religion": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is not jain.",
+          "category": "identity",
+          "confidence": 0.84,
+          "tags": ["identity", "identity_slot:religion", "identity_state:revoked"],
+          "updated_at": "2024-01-01T00:00:00Z"
+        },
+        {
+          "content": "User's religion is jain.",
+          "category": "identity",
+          "confidence": 0.92,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"],
+          "updated_at": "2026-03-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_fallback_slot_from_content_without_tags",
+    "description": "Slot inference should work even without slot tags when phrasing is canonical.",
+    "user_message": "give me context",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[employer] active: acme labs"
+    ],
+    "identity_slot_expectations": {
+      "employer": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User works at Acme Labs.",
+          "category": "identity",
+          "confidence": 0.87,
+          "tags": ["identity"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_fallback_state_from_content_without_tags",
+    "description": "State inference should detect revoked phrasing without explicit state tags.",
+    "user_message": "what do you know now",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[religion] revoked: hindu"
+    ],
+    "identity_slot_expectations": {
+      "religion": "revoked"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is not hindu.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_case_insensitive_slot_tags",
+    "description": "Slot/state tags should be handled case-insensitively.",
+    "user_message": "what is my profile",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[origin] active: rajasthan"
+    ],
+    "identity_slot_expectations": {
+      "origin": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User is from Rajasthan.",
+          "category": "identity",
+          "confidence": 0.88,
+          "tags": ["identity", "IDENTITY_SLOT:ORIGIN", "IDENTITY_STATE:AFFIRMED"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_multi_slot_profile_carries_all",
+    "description": "Multiple identity slots should co-exist in always-on identity layer.",
+    "user_message": "continue",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[name] active: ishaan",
+      "[origin] active: a marwari family",
+      "[role] active: product builder"
+    ],
+    "identity_slot_expectations": {
+      "name": "active",
+      "origin": "active",
+      "role": "active"
+    },
+    "min_counts": {
+      "always_on_identity_lines": 3
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's name is Ishaan.",
+          "category": "identity",
+          "confidence": 0.94,
+          "tags": ["identity", "identity_slot:name", "identity_state:affirmed"]
+        },
+        {
+          "content": "User is from a marwari family.",
+          "category": "identity",
+          "confidence": 0.9,
+          "tags": ["identity", "identity_slot:origin", "identity_state:affirmed"]
+        },
+        {
+          "content": "User works as product builder.",
+          "category": "identity",
+          "confidence": 0.91,
+          "tags": ["identity", "identity_slot:role", "identity_state:affirmed"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_non_communication_preference_not_promoted",
+    "description": "Non-communication preferences should not be promoted into communication identity lines.",
+    "user_message": "prep a response",
+    "agent_namespace": "main",
+    "expect_not_contains": [
+      "[communication] active: user prefers green tea"
+    ],
+    "seed": {
+      "facts": [
+        {
+          "content": "User prefers green tea.",
+          "category": "preference",
+          "confidence": 0.9,
+          "tags": ["preference", "tea"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_tooling_directive_not_promoted",
+    "description": "Tooling directives should not appear in always-on communication identity lines.",
+    "user_message": "help me answer",
+    "agent_namespace": "main",
+    "expect_not_contains": [
+      "[communication] directive: always use ripgrep"
+    ],
+    "seed": {
+      "directives": [
+        {
+          "kind": "tooling",
+          "scope": "global",
+          "status": "active",
+          "content": "Always use ripgrep for file search.",
+          "confidence": 0.95,
+          "priority_score": 1.0,
+          "tags": ["derived", "directive"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_sparse_identity_fallback",
+    "description": "Empty identity evidence should render sparse guidance instead of hallucinating values.",
+    "user_message": "what should you know about me",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "always-on identity layer:",
+      "identity is still sparse"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 0
+    },
+    "seed": {}
+  },
+  {
+    "id": "edge_employer_superseded",
+    "description": "Latest employer should be active and older employer shown as superseded.",
+    "user_message": "give profile context",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[employer] active: upstorr",
+      "superseded: acme labs"
+    ],
+    "identity_slot_expectations": {
+      "employer": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User works at Acme Labs.",
+          "category": "identity",
+          "confidence": 0.8,
+          "tags": ["identity", "identity_slot:employer", "identity_state:affirmed"],
+          "updated_at": "2025-01-01T00:00:00Z"
+        },
+        {
+          "content": "User works at Upstorr.",
+          "category": "identity",
+          "confidence": 0.95,
+          "tags": ["identity", "identity_slot:employer", "identity_state:affirmed"],
+          "updated_at": "2026-02-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_uncertain_employer_without_affirmed",
+    "description": "Uncertain employer should surface as uncertain when no affirmed evidence exists.",
+    "user_message": "what do you infer",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[employer] uncertain: acme labs"
+    ],
+    "identity_slot_expectations": {
+      "employer": "uncertain"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User may work at Acme Labs.",
+          "category": "identity",
+          "confidence": 0.62,
+          "tags": ["identity", "identity_slot:employer", "identity_state:uncertain"]
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_long_horizon_identity_drift",
+    "description": "Long-horizon drift should keep newest active value and mark older value superseded.",
+    "user_message": "before we continue, remind me what you know",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[religion] active: hindu",
+      "superseded: jain"
+    ],
+    "identity_slot_expectations": {
+      "religion": "active"
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User's religion is jain.",
+          "category": "identity",
+          "confidence": 0.86,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"],
+          "created_at": "2022-01-01T00:00:00Z",
+          "updated_at": "2022-01-01T00:00:00Z"
+        },
+        {
+          "content": "User's religion is hindu.",
+          "category": "identity",
+          "confidence": 0.91,
+          "tags": ["identity", "identity_slot:religion", "identity_state:affirmed"],
+          "created_at": "2026-01-01T00:00:00Z",
+          "updated_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "id": "edge_communication_directive_and_preference_together",
+    "description": "Communication preference and directive should both remain present together.",
+    "user_message": "help me decide",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "[communication] active: user prefers concise and direct replies",
+      "[communication] directive: always keep replies concise and direct"
+    ],
+    "min_counts": {
+      "always_on_identity_lines": 2
+    },
+    "seed": {
+      "facts": [
+        {
+          "content": "User prefers concise and direct replies.",
+          "category": "preference",
+          "confidence": 0.93,
+          "tags": ["communication", "preference"]
+        }
+      ],
+      "directives": [
+        {
+          "kind": "communication",
+          "scope": "global",
+          "status": "active",
+          "content": "Always keep replies concise and direct.",
+          "confidence": 0.95,
+          "priority_score": 1.0,
+          "tags": ["derived", "directive"]
+        }
+      ]
+    }
+  }
+]
