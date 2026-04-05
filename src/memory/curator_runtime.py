@@ -286,12 +286,20 @@ async def run_task(
     min_message_count: int | None = None,
     scenarios_file: str | Path | None = None,
     min_pass_rate: float | None = None,
+    enable_judge: bool | None = None,
+    judge_enforce: bool | None = None,
+    judge_model: str | None = None,
+    judge_sample_limit: int | None = None,
 ) -> dict[str, Any]:
     if task == "replay-eval":
         resolved_min_pass_rate = min_pass_rate if min_pass_rate is not None else float(os.getenv("MEMORY_EVAL_MIN_PASS_RATE", "1.0"))
         return await run_replay_eval(
             scenarios_file=scenarios_file,
             min_pass_rate=resolved_min_pass_rate,
+            enable_judge=enable_judge,
+            judge_enforce=judge_enforce,
+            judge_model=judge_model,
+            judge_sample_limit=judge_sample_limit,
         )
 
     owns_client = client is None
@@ -334,6 +342,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-message-count", type=int)
     parser.add_argument("--scenarios-file")
     parser.add_argument("--min-pass-rate", type=float)
+    parser.add_argument("--enable-judge", action="store_true")
+    parser.add_argument("--judge-enforce", action="store_true")
+    parser.add_argument("--judge-model")
+    parser.add_argument("--judge-sample-limit", type=int)
     return parser
 
 
@@ -352,6 +364,10 @@ def main(argv: list[str] | None = None) -> int:
                 min_message_count=args.min_message_count,
                 scenarios_file=args.scenarios_file,
                 min_pass_rate=args.min_pass_rate,
+                enable_judge=args.enable_judge,
+                judge_enforce=args.judge_enforce,
+                judge_model=args.judge_model,
+                judge_sample_limit=args.judge_sample_limit,
             )
         )
         record_task_observability(

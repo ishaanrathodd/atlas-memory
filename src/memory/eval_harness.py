@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from pydantic import Field
 
 from memory.enrichment import collect_enrichment_payload
@@ -79,6 +81,190 @@ _TEMPORAL_SIGNAL_KEYS = {
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_base_url(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "https://api.openai.com/v1"
+    return text.rstrip("/")
+
+
+def _judge_sample_rows(
+    scenarios: list[ReplayScenario],
+    results: list[dict[str, Any]],
+    *,
+    sample_limit: int,
+) -> list[dict[str, Any]]:
+    scenario_map = {scenario.id: scenario for scenario in scenarios}
+    failed = [item for item in results if not bool(item.get("passed"))]
+    passed = [item for item in results if bool(item.get("passed"))]
+    ordered = [*failed, *passed]
+    sampled: list[dict[str, Any]] = []
+    for item in ordered[: max(1, sample_limit)]:
+        scenario_id = str(item.get("scenario_id") or "")
+        scenario = scenario_map.get(scenario_id)
+        sampled.append(
+            {
+                "scenario_id": scenario_id,
+                "description": item.get("description") or (scenario.description if scenario else None),
+                "query": scenario.user_message if scenario else None,
+                "passed": bool(item.get("passed")),
+                "checks_failed": item.get("checks_failed", []),
+                "counts": item.get("counts", {}),
+            }
+        )
+    return sampled
+
+
+async def _run_llm_judge(
+    *,
+    scenarios: list[ReplayScenario],
+    results: list[dict[str, Any]],
+    min_pass_rate: float,
+    model: str,
+    base_url: str,
+    api_key: str | None,
+    sample_limit: int,
+    http_client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    sampled_rows = _judge_sample_rows(
+        scenarios,
+        results,
+        sample_limit=sample_limit,
+    )
+    if not sampled_rows:
+        return {
+            "enabled": True,
+            "status": "skipped",
+            "reason": "No sampled rows available for judging.",
+            "sampled_scenarios": 0,
+        }
+    if not api_key:
+        return {
+            "enabled": True,
+            "status": "skipped",
+            "reason": "Judge API key not configured.",
+            "sampled_scenarios": len(sampled_rows),
+        }
+
+    system_prompt = (
+        "You are a strict memory quality judge. Evaluate whether responses show continuity,"
+        " adaptation, and outcome grounding. Return JSON only."
+    )
+    user_prompt = {
+        "task": "score_replay_eval_samples",
+        "instructions": {
+            "score_range": "0.0-1.0",
+            "threshold": float(min_pass_rate),
+            "pass_rule": "A scenario is pass if score >= threshold.",
+        },
+        "samples": sampled_rows,
+        "output_schema": {
+            "overall": {
+                "mean_score": "float",
+                "notes": "string",
+            },
+            "scenario_scores": [
+                {
+                    "scenario_id": "string",
+                    "score": "float",
+                    "reason": "string",
+                }
+            ],
+        },
+    }
+
+    owns_client = http_client is None
+    client = http_client or httpx.AsyncClient(timeout=30.0)
+    try:
+        response = await client.post(
+            f"{_normalize_base_url(base_url)}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(user_prompt, sort_keys=True)},
+                ],
+                "response_format": {"type": "json_object"},
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        content = (
+            payload.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+        )
+        parsed = json.loads(content) if isinstance(content, str) else {}
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "status": "error",
+            "model": model,
+            "sampled_scenarios": len(sampled_rows),
+            "error": str(exc),
+        }
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    scenario_rows = parsed.get("scenario_scores", []) if isinstance(parsed, dict) else []
+    normalized_rows: list[dict[str, Any]] = []
+    pass_count = 0
+    for row in scenario_rows:
+        if not isinstance(row, dict):
+            continue
+        scenario_id = str(row.get("scenario_id") or "").strip()
+        if not scenario_id:
+            continue
+        raw_score = row.get("score")
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            continue
+        score = max(0.0, min(1.0, score))
+        passed = score >= float(min_pass_rate)
+        if passed:
+            pass_count += 1
+        normalized_rows.append(
+            {
+                "scenario_id": scenario_id,
+                "score": round(score, 6),
+                "passed": passed,
+                "reason": str(row.get("reason") or "").strip(),
+            }
+        )
+
+    required = len(normalized_rows)
+    pass_rate = round((float(pass_count) / float(required)) if required else 0.0, 6)
+    overall = parsed.get("overall", {}) if isinstance(parsed, dict) else {}
+    notes = ""
+    if isinstance(overall, dict):
+        notes = str(overall.get("notes") or "").strip()
+
+    return {
+        "enabled": True,
+        "status": "ok",
+        "model": model,
+        "sampled_scenarios": len(sampled_rows),
+        "required": required,
+        "passed": pass_count,
+        "pass_rate": pass_rate,
+        "threshold": float(min_pass_rate),
+        "meets_threshold": pass_rate >= float(min_pass_rate),
+        "notes": notes,
+        "scenario_scores": normalized_rows,
+    }
 
 
 def _parse_uuid(value: Any) -> UUID:
@@ -795,6 +981,13 @@ async def run_replay_eval(
     *,
     scenarios_file: str | Path | None = None,
     min_pass_rate: float = 1.0,
+    enable_judge: bool | None = None,
+    judge_enforce: bool | None = None,
+    judge_model: str | None = None,
+    judge_sample_limit: int | None = None,
+    judge_base_url: str | None = None,
+    judge_api_key: str | None = None,
+    judge_http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     scenarios = load_replay_scenarios(scenarios_file)
     results: list[dict[str, Any]] = []
@@ -839,6 +1032,60 @@ async def run_replay_eval(
         threshold=float(min_pass_rate),
     )
 
+    deterministic_meets_threshold = pass_rate >= float(min_pass_rate)
+    resolved_enable_judge = enable_judge if enable_judge is not None else _env_flag("MEMORY_EVAL_ENABLE_JUDGE", default=False)
+    resolved_judge_enforce = judge_enforce if judge_enforce is not None else _env_flag("MEMORY_EVAL_JUDGE_ENFORCE", default=False)
+
+    if resolved_enable_judge:
+        resolved_judge_model = str(
+            judge_model
+            or os.getenv("MEMORY_EVAL_JUDGE_MODEL")
+            or "gpt-4o-mini"
+        )
+        resolved_judge_base_url = str(
+            judge_base_url
+            or os.getenv("MEMORY_EVAL_JUDGE_BASE_URL")
+            or os.getenv("MEMORY_OPENAI_BASE_URL")
+            or os.getenv("OPENAI_BASE_URL")
+            or os.getenv("GLM_BASE_URL")
+            or "https://api.openai.com/v1"
+        )
+        resolved_judge_api_key = (
+            judge_api_key
+            or os.getenv("MEMORY_EVAL_JUDGE_API_KEY")
+            or os.getenv("MEMORY_OPENAI_API_KEY")
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("GLM_API_KEY")
+        )
+        resolved_judge_sample_limit = int(
+            judge_sample_limit
+            if judge_sample_limit is not None
+            else int(os.getenv("MEMORY_EVAL_JUDGE_SAMPLE_LIMIT", "12"))
+        )
+        judge_scorecard = await _run_llm_judge(
+            scenarios=scenarios,
+            results=results,
+            min_pass_rate=float(min_pass_rate),
+            model=resolved_judge_model,
+            base_url=resolved_judge_base_url,
+            api_key=resolved_judge_api_key,
+            sample_limit=max(1, resolved_judge_sample_limit),
+            http_client=judge_http_client,
+        )
+    else:
+        judge_scorecard = {
+            "enabled": False,
+            "status": "disabled",
+            "reason": "Judge layer is disabled.",
+        }
+
+    meets_threshold = deterministic_meets_threshold
+    if resolved_judge_enforce:
+        if judge_scorecard.get("status") != "ok":
+            meets_threshold = False
+        else:
+            meets_threshold = meets_threshold and bool(judge_scorecard.get("meets_threshold", False))
+
     return {
         "task": "replay-eval",
         "total": total,
@@ -846,9 +1093,12 @@ async def run_replay_eval(
         "failed": failed,
         "pass_rate": round(pass_rate, 6),
         "min_pass_rate": float(min_pass_rate),
-        "meets_threshold": pass_rate >= float(min_pass_rate),
+        "deterministic_meets_threshold": deterministic_meets_threshold,
+        "judge_enforce": resolved_judge_enforce,
+        "meets_threshold": meets_threshold,
         "identity_slot_scores": identity_slot_scores,
         "universal_outcome_scorecard": universal_outcome_scorecard,
+        "judge_scorecard": judge_scorecard,
         "failed_scenarios": [
             {
                 "scenario_id": item.get("scenario_id"),

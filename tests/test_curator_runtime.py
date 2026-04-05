@@ -2276,6 +2276,22 @@ def test_cli_parser_accepts_supported_tasks() -> None:
     assert replay_args.scenarios_file == "tests/fixtures/replay_eval_scenarios.json"
     assert replay_args.min_pass_rate == 0.9
 
+    replay_with_judge = parser.parse_args(
+        [
+            "replay-eval",
+            "--enable-judge",
+            "--judge-enforce",
+            "--judge-model",
+            "gpt-4o-mini",
+            "--judge-sample-limit",
+            "6",
+        ]
+    )
+    assert replay_with_judge.enable_judge is True
+    assert replay_with_judge.judge_enforce is True
+    assert replay_with_judge.judge_model == "gpt-4o-mini"
+    assert replay_with_judge.judge_sample_limit == 6
+
 
 def test_runtime_main_dispatches_task_and_prints_json(
     monkeypatch: pytest.MonkeyPatch,
@@ -2290,12 +2306,27 @@ def test_runtime_main_dispatches_task_and_prints_json(
         min_message_count: int | None = None,
         scenarios_file: str | Path | None = None,
         min_pass_rate: float | None = None,
+        enable_judge: bool | None = None,
+        judge_enforce: bool | None = None,
+        judge_model: str | None = None,
+        judge_sample_limit: int | None = None,
         state_db_path: str | Path | None = None,
         source: str | None = None,
         from_date: str | None = None,
         to_date: str | None = None,
     ) -> dict[str, object]:
-        _ = (scenarios_file, min_pass_rate, state_db_path, source, from_date, to_date)
+        _ = (
+            scenarios_file,
+            min_pass_rate,
+            enable_judge,
+            judge_enforce,
+            judge_model,
+            judge_sample_limit,
+            state_db_path,
+            source,
+            from_date,
+            to_date,
+        )
         assert task == "health"
         assert hermes_home is not None
         return {"ok": True, "task": task}
@@ -2323,9 +2354,25 @@ async def test_run_task_health_reports_supabase_status() -> None:
 
 @pytest.mark.asyncio
 async def test_run_task_replay_eval_uses_harness(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_replay_eval(*, scenarios_file=None, min_pass_rate: float = 1.0) -> dict[str, object]:
+    async def fake_replay_eval(
+        *,
+        scenarios_file=None,
+        min_pass_rate: float = 1.0,
+        enable_judge: bool | None = None,
+        judge_enforce: bool | None = None,
+        judge_model: str | None = None,
+        judge_sample_limit: int | None = None,
+        judge_base_url: str | None = None,
+        judge_api_key: str | None = None,
+        judge_http_client=None,
+    ) -> dict[str, object]:
+        _ = (judge_base_url, judge_api_key, judge_http_client)
         assert scenarios_file == "tests/fixtures/replay_eval_scenarios.json"
         assert min_pass_rate == 0.95
+        assert enable_judge is True
+        assert judge_enforce is True
+        assert judge_model == "gpt-4o-mini"
+        assert judge_sample_limit == 6
         return {
             "task": "replay-eval",
             "total": 2,
@@ -2333,7 +2380,10 @@ async def test_run_task_replay_eval_uses_harness(monkeypatch: pytest.MonkeyPatch
             "failed": 0,
             "pass_rate": 1.0,
             "min_pass_rate": min_pass_rate,
+            "deterministic_meets_threshold": True,
+            "judge_enforce": judge_enforce,
             "meets_threshold": True,
+            "judge_scorecard": {"enabled": True, "status": "ok", "meets_threshold": True},
             "failed_scenarios": [],
             "results": [],
         }
@@ -2344,6 +2394,10 @@ async def test_run_task_replay_eval_uses_harness(monkeypatch: pytest.MonkeyPatch
         "replay-eval",
         scenarios_file="tests/fixtures/replay_eval_scenarios.json",
         min_pass_rate=0.95,
+        enable_judge=True,
+        judge_enforce=True,
+        judge_model="gpt-4o-mini",
+        judge_sample_limit=6,
     )
 
     assert result["task"] == "replay-eval"

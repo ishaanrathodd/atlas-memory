@@ -16,7 +16,7 @@ It answers:
 ## Last Updated
 
 - Date: `2026-04-05`
-- Repository status: `green` (`204 passed, 10 skipped`)
+- Repository status: `green` (`207 passed, 10 skipped`)
 
 
 ## Executive Summary
@@ -370,6 +370,12 @@ Important:
   - enrichment now reranks standing directives per turn by relevance + confidence + recency to improve ambiguous retrieval behavior
   - schema decision: no schema changes required; this is conversation-driven curation and retrieval-layer ranking only
 - validation: directive/enrichment targeted tests green; atlas full suite `204 passed, 10 skipped`
+- implemented optional LLM-judge layer for replay evaluation (no dashboard dependency):
+  - replay eval now supports an opt-in judge scorecard (`--enable-judge`) with configurable model and sample limit
+  - deterministic gates remain the default source of truth; judge can be non-blocking or enforced (`--judge-enforce`) depending on run mode
+  - runtime/CLI wiring added for conversation-driven operation only (no manual dashboard workflow)
+  - schema decision: no schema changes required; this is eval/runtime orchestration only
+- validation: eval/runtime targeted tests green; atlas full suite `207 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -383,7 +389,7 @@ Important:
 
 ### Next Evaluation Layer
 
-- LLM-in-the-loop long-horizon eval suites
+- expand LLM-judge calibration coverage (prompt tuning, sampled-scenario mix, cost/latency guardrails)
 - adversarial temporal recall cases
 - proactive-intervention precision/recall tests
 
@@ -478,6 +484,7 @@ Final Atlas is done when all are true:
 5. [x] add explicit always-on identity layer in enrichment context
 6. [x] add long-horizon eval suite baseline (deterministic replay + CI gate, LLM-in-loop ready)
 7. [x] complete canonical identity conflict-resolution lifecycle (confirm/supersede/revoke semantics)
+8. [x] add optional replay LLM-judge layer with CLI toggles (non-dashboard, enforce optional)
 
 
 ## Next Chat Continuation Protocol
