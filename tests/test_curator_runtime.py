@@ -1110,6 +1110,170 @@ async def test_refresh_directives_does_not_supersede_recent_unseen_directive_due
 
 
 @pytest.mark.asyncio
+async def test_refresh_directives_derives_implicit_communication_feedback_rules() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+    session = _make_session(
+        started_at=now - timedelta(hours=1),
+        message_count=1,
+        summary="User gave response-quality feedback.",
+    ).model_copy(update={"agent_namespace": "main"})
+    transport.sessions[str(session.id)] = session
+    transport.episodes_by_session[str(session.id)] = [
+        _make_episode(
+            str(session.id),
+            EpisodeRole.USER,
+            "Your last reply was too robotic and too verbose.",
+            0,
+        ).model_copy(update={"agent_namespace": "main"}),
+    ]
+
+    stats = await refresh_directives(client, now=now, agent_namespace="main")
+
+    assert stats["directives_upserted"] >= 2
+    contents = [directive.content.lower() for directive in transport.directives if directive.status.value == "active"]
+    assert any("natural and human" in content for content in contents)
+    assert any("concise and direct" in content for content in contents)
+
+
+@pytest.mark.asyncio
+async def test_refresh_directives_skips_recent_conflicting_rule_without_override() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+    existing = Directive(
+        directive_key="auto:directive:concise",
+        kind="communication",
+        title="Reply style",
+        content="Always keep replies concise and direct.",
+        status="active",
+        confidence=0.95,
+        priority_score=1.0,
+        source_episode_ids=[],
+        source_session_ids=[],
+        tags=["derived", "directive"],
+        created_at=now - timedelta(days=1),
+        updated_at=now - timedelta(hours=3),
+        last_observed_at=now - timedelta(hours=3),
+        agent_namespace="main",
+    )
+    transport.directives.append(existing)
+
+    session = _make_session(
+        started_at=now - timedelta(hours=1),
+        message_count=1,
+        summary="Single conflicting style rule.",
+    ).model_copy(update={"agent_namespace": "main"})
+    transport.sessions[str(session.id)] = session
+    transport.episodes_by_session[str(session.id)] = [
+        _make_episode(str(session.id), EpisodeRole.USER, "Always keep replies detailed.", 0).model_copy(
+            update={"agent_namespace": "main"}
+        ),
+    ]
+
+    stats = await refresh_directives(client, now=now, agent_namespace="main")
+
+    assert stats["directives_upserted"] == 0
+    assert stats["directives_conflict_skipped"] >= 1
+    refreshed = next(item for item in transport.directives if item.directive_key == "auto:directive:concise")
+    assert refreshed.status.value == "active"
+
+
+@pytest.mark.asyncio
+async def test_refresh_directives_override_supersedes_conflicting_recent_rule() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+    existing = Directive(
+        directive_key="auto:directive:concise",
+        kind="communication",
+        title="Reply style",
+        content="Always keep replies concise and direct.",
+        status="active",
+        confidence=0.95,
+        priority_score=1.0,
+        source_episode_ids=[],
+        source_session_ids=[],
+        tags=["derived", "directive"],
+        created_at=now - timedelta(days=1),
+        updated_at=now - timedelta(hours=2),
+        last_observed_at=now - timedelta(hours=2),
+        agent_namespace="main",
+    )
+    transport.directives.append(existing)
+
+    session = _make_session(
+        started_at=now - timedelta(minutes=45),
+        message_count=1,
+        summary="Explicit style override.",
+    ).model_copy(update={"agent_namespace": "main"})
+    transport.sessions[str(session.id)] = session
+    transport.episodes_by_session[str(session.id)] = [
+        _make_episode(
+            str(session.id),
+            EpisodeRole.USER,
+            "Override previous style rules: from now on keep replies detailed.",
+            0,
+        ).model_copy(update={"agent_namespace": "main"}),
+    ]
+
+    stats = await refresh_directives(client, now=now, agent_namespace="main")
+
+    assert stats["directives_upserted"] >= 1
+    assert stats["directives_superseded"] >= 1
+    active_contents = [item.content.lower() for item in transport.directives if item.status.value == "active"]
+    assert any("detailed" in content for content in active_contents)
+    assert not any("concise" in content for content in active_contents)
+
+
+@pytest.mark.asyncio
+async def test_refresh_directives_forget_phrase_revokes_matching_rule() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+    existing = Directive(
+        directive_key="auto:directive:concise",
+        kind="communication",
+        title="Reply style",
+        content="Always keep replies concise and direct.",
+        status="active",
+        confidence=0.95,
+        priority_score=1.0,
+        source_episode_ids=[],
+        source_session_ids=[],
+        tags=["derived", "directive"],
+        created_at=now - timedelta(days=2),
+        updated_at=now - timedelta(days=1),
+        last_observed_at=now - timedelta(days=1),
+        agent_namespace="main",
+    )
+    transport.directives.append(existing)
+
+    session = _make_session(
+        started_at=now - timedelta(minutes=30),
+        message_count=1,
+        summary="User revokes old style rule.",
+    ).model_copy(update={"agent_namespace": "main"})
+    transport.sessions[str(session.id)] = session
+    transport.episodes_by_session[str(session.id)] = [
+        _make_episode(
+            str(session.id),
+            EpisodeRole.USER,
+            "Forget the old tone rule about concise replies.",
+            0,
+        ).model_copy(update={"agent_namespace": "main"}),
+    ]
+
+    stats = await refresh_directives(client, now=now, agent_namespace="main")
+
+    assert stats["directives_revoked"] >= 1
+    assert stats["directive_count"] == 0
+    revoked = next(item for item in transport.directives if item.directive_key == "auto:directive:concise")
+    assert revoked.status.value == "revoked"
+
+
+@pytest.mark.asyncio
 async def test_refresh_timeline_events_materializes_session_summaries() -> None:
     transport = CuratorRuntimeTransport()
     client = _make_client(transport)

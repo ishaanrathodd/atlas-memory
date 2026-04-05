@@ -2415,6 +2415,45 @@ def _timeline_event_relevance_score(event: TimelineEvent, query_tokens: set[str]
     )
 
 
+def _directive_relevance_score(
+    directive: Directive,
+    *,
+    query_tokens: set[str],
+    advice_query: bool,
+    memory_query: bool,
+    continuity_query: bool,
+) -> float:
+    content_tokens = _tokenize(directive.content)
+    overlap = _token_overlap_count(query_tokens, content_tokens)
+    kind_bonus = {
+        "communication": 0.55,
+        "behavior": 0.4,
+        "memory": 0.35,
+        "tooling": 0.25,
+    }.get(directive.kind.value, 0.2)
+
+    if advice_query and directive.kind.value in {"behavior", "communication"}:
+        kind_bonus += 0.2
+    if memory_query and directive.kind.value in {"memory", "behavior"}:
+        kind_bonus += 0.25
+    if continuity_query and directive.kind.value in {"communication", "memory"}:
+        kind_bonus += 0.2
+
+    recency_bonus = 0.0
+    observed = directive.last_observed_at or directive.updated_at or directive.created_at
+    if observed is not None:
+        age_days = max(0.0, (datetime.now(timezone.utc) - observed).total_seconds() / 86400.0)
+        recency_bonus = max(0.0, 0.25 - min(0.25, age_days / 120.0))
+
+    return (
+        (overlap * 3.5)
+        + float(directive.priority_score)
+        + (float(directive.confidence) * 0.4)
+        + kind_bonus
+        + recency_bonus
+    )
+
+
 async def collect_enrichment_payload(
     transport: MemoryTransport,
     user_message: str,
@@ -2536,6 +2575,21 @@ async def collect_enrichment_payload(
             recent_episodes_task,
             session_task,
         )
+
+    directives = sorted(
+        directives,
+        key=lambda directive: (
+            _directive_relevance_score(
+                directive,
+                query_tokens=query_tokens,
+                advice_query=advice_query,
+                memory_query=memory_query,
+                continuity_query=continuity_query,
+            ),
+            _sort_datetime(directive.last_observed_at or directive.updated_at or directive.created_at),
+        ),
+        reverse=True,
+    )[:8]
 
     ranked_facts = sorted(
         [

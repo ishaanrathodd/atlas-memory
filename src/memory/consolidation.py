@@ -232,6 +232,96 @@ _DIRECTIVE_REJECT_MARKERS = (
     "u r still lying",
     "still lying",
 )
+_DIRECTIVE_OVERRIDE_MARKERS = (
+    "override",
+    "replace",
+    "instead",
+    "from now on",
+    "going forward",
+    "new default",
+    "switch to",
+)
+_DIRECTIVE_REVOKE_MARKERS = (
+    "forget",
+    "drop",
+    "remove",
+    "revoke",
+    "cancel",
+    "ignore previous",
+    "no longer",
+    "stop using",
+    "stop doing",
+)
+_DIRECTIVE_SCOPE_KEYWORDS = {
+    "communication": ("tone", "style", "reply", "replies", "wording", "speak", "talk", "write", "communication"),
+    "tooling": ("tool", "delegate", "subagent", "sql", "git", "terminal", "run"),
+    "memory": ("memory", "remember", "context", "persist", "store"),
+}
+_DIRECTIVE_RETRACTION_STOPWORDS = {
+    "about",
+    "again",
+    "agent",
+    "any",
+    "be",
+    "being",
+    "default",
+    "directive",
+    "directives",
+    "do",
+    "for",
+    "from",
+    "have",
+    "i",
+    "it",
+    "keep",
+    "me",
+    "my",
+    "now",
+    "old",
+    "please",
+    "previous",
+    "reply",
+    "rule",
+    "rules",
+    "style",
+    "that",
+    "the",
+    "them",
+    "this",
+    "to",
+    "tone",
+    "use",
+    "using",
+    "you",
+    "your",
+}
+_DIRECTIVE_DIMENSION_MARKERS = {
+    "concise": ("concise", "short", "brief"),
+    "detailed": ("detailed", "detail", "thorough", "long"),
+    "formal": ("formal", "professional", "structured"),
+    "casual": ("casual", "natural", "human", "conversational"),
+    "warm": ("warm", "empathetic", "empathetic", "kind", "supportive"),
+    "direct": ("direct", "clear", "blunt"),
+    "soft": ("gentle", "soft", "less blunt"),
+}
+_DIRECTIVE_CONFLICT_DIMENSIONS = {
+    "concise": {"detailed"},
+    "detailed": {"concise"},
+    "formal": {"casual"},
+    "casual": {"formal"},
+    "direct": {"soft"},
+    "soft": {"direct"},
+}
+_DIRECTIVE_CONFLICT_WINDOW_HOURS = 72
+_DIRECTIVE_CONFLICT_MIN_SUPPORT = 2
+_IMPLICIT_COMMUNICATION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\btoo\s+(?:verbose|long|wordy)\b", re.IGNORECASE), "Keep replies concise and direct."),
+    (re.compile(r"\btoo\s+(?:short|brief|thin)\b", re.IGNORECASE), "Keep replies more detailed when needed."),
+    (re.compile(r"\b(?:too\s+robotic|sound(?:ing)?\s+robotic|too\s+stiff)\b", re.IGNORECASE), "Keep replies natural and human."),
+    (re.compile(r"\btoo\s+(?:casual|informal)\b", re.IGNORECASE), "Keep replies more formal and structured."),
+    (re.compile(r"\btoo\s+(?:formal|rigid)\b", re.IGNORECASE), "Keep replies more conversational and natural."),
+    (re.compile(r"\btoo\s+(?:harsh|blunt)\b", re.IGNORECASE), "Keep replies warm and less blunt."),
+)
 _DIRECTIVE_LEAD_IN_RE = re.compile(
     r"^(?:(?:and|but|so|okay|ok|hey|listen|note|also)\s*,?\s*)+",
     re.IGNORECASE,
@@ -1260,6 +1350,108 @@ def _extract_directive_clauses(content: str) -> list[str]:
                     clauses.append(subclause)
                     seen.add(key)
     return clauses
+
+
+def _directive_support_count(content: str) -> int:
+    _ = content
+    # Reinforcement should come from repeated observations across episodes, not from wording intensity.
+    return 1
+
+
+def _extract_implicit_directive_clauses(content: str) -> list[str]:
+    clauses: list[str] = []
+    lowered = (content or "").lower()
+    if not lowered:
+        return clauses
+    # Only infer implicit communication directives when the user is clearly critiquing response quality.
+    if not any(marker in lowered for marker in ("too ", "sounds ", "sounding ", "comes off", "felt ")):
+        return clauses
+    for pattern, directive in _IMPLICIT_COMMUNICATION_RULES:
+        if pattern.search(content):
+            clauses.append(directive)
+    return clauses
+
+
+def _directive_dimensions(content: str) -> set[str]:
+    lowered = content.lower()
+    dimensions: set[str] = set()
+    for dimension, markers in _DIRECTIVE_DIMENSION_MARKERS.items():
+        if any(marker in lowered for marker in markers):
+            dimensions.add(dimension)
+    return dimensions
+
+
+def _directives_conflict(candidate_content: str, existing_content: str) -> bool:
+    candidate_dims = _directive_dimensions(candidate_content)
+    existing_dims = _directive_dimensions(existing_content)
+    if not candidate_dims or not existing_dims:
+        return False
+    for dim in candidate_dims:
+        opposing = _DIRECTIVE_CONFLICT_DIMENSIONS.get(dim, set())
+        if opposing.intersection(existing_dims):
+            return True
+    return False
+
+
+def _directive_mentions_scope(content: str, kind: str) -> bool:
+    lowered = (content or "").lower()
+    keywords = _DIRECTIVE_SCOPE_KEYWORDS.get(kind, ())
+    return any(keyword in lowered for keyword in keywords)
+
+
+def _directive_retraction_target_tokens(content: str) -> set[str]:
+    lowered = (content or "").lower()
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", lowered)
+        if len(token) > 2 and token not in _DIRECTIVE_RETRACTION_STOPWORDS
+    }
+    return tokens
+
+
+def _directive_clauses_with_metadata(content: str) -> list[tuple[str, bool, int]]:
+    clauses: list[tuple[str, bool, int]] = []
+    seen: set[str] = set()
+    raw_clauses = _extract_directive_clauses(content)
+    implicit_clauses = _extract_implicit_directive_clauses(content)
+    for clause in [*raw_clauses, *implicit_clauses]:
+        normalized = _normalize_directive_clause(clause)
+        lowered = normalized.lower()
+        if not normalized or lowered in seen:
+            continue
+        seen.add(lowered)
+        explicit_override = any(marker in lowered for marker in _DIRECTIVE_OVERRIDE_MARKERS)
+        clauses.append((normalized, explicit_override, _directive_support_count(normalized)))
+    return clauses
+
+
+def _extract_directive_retraction(content: str) -> dict[str, Any] | None:
+    lowered = (content or "").lower()
+    if not any(marker in lowered for marker in _DIRECTIVE_REVOKE_MARKERS):
+        return None
+    kinds = {
+        kind
+        for kind in _DIRECTIVE_SCOPE_KEYWORDS
+        if _directive_mentions_scope(lowered, kind)
+    }
+    if not kinds:
+        # Default to communication/behavior if scope is not explicit.
+        kinds = {"communication", "behavior"}
+    return {
+        "kinds": kinds,
+        "tokens": _directive_retraction_target_tokens(content),
+    }
+
+
+def _directive_matches_retraction(existing_content: str, retraction_tokens: set[str]) -> bool:
+    if not retraction_tokens:
+        return True
+    existing_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", existing_content.lower())
+        if len(token) > 2
+    }
+    return bool(existing_tokens.intersection(retraction_tokens))
 
 
 def _split_summary_sentences(summary: str) -> list[str]:
@@ -2682,13 +2874,38 @@ async def refresh_directives(
         agent_namespace=agent_namespace,
     )
 
+    existing_directives = await client.list_directives(limit=128, agent_namespace=agent_namespace, statuses=["active"])
+    existing_by_key = {directive.directive_key: directive for directive in existing_directives}
+
     candidates: dict[str, dict[str, Any]] = {}
+    revoked = 0
     for session in sessions:
         episodes = await _list_session_episodes(client, str(session.id))
         for episode in episodes:
             if episode.role != EpisodeRole.USER:
                 continue
-            for clause in _extract_directive_clauses(episode.content):
+            retraction = _extract_directive_retraction(episode.content)
+            if retraction is not None:
+                for existing in list(existing_by_key.values()):
+                    if existing.status is not DirectiveStatus.ACTIVE:
+                        continue
+                    if existing.kind.value not in retraction["kinds"]:
+                        continue
+                    if not _directive_matches_retraction(existing.content, retraction["tokens"]):
+                        continue
+                    updated = existing.model_copy(
+                        update={
+                            "status": DirectiveStatus.REVOKED,
+                            "priority_score": 0.0,
+                            "updated_at": reference_time,
+                            "last_observed_at": episode.message_timestamp,
+                        }
+                    )
+                    await client.upsert_directive(updated)
+                    existing_by_key[existing.directive_key] = updated
+                    revoked += 1
+
+            for clause, explicit_override, support_count in _directive_clauses_with_metadata(episode.content):
                 key = _directive_key(clause)
                 candidate = candidates.get(key)
                 directive_data = {
@@ -2702,12 +2919,16 @@ async def refresh_directives(
                     "source_session_ids": [str(session.id)] if session.id is not None else [],
                     "tags": ["derived", "directive"],
                     "last_observed_at": episode.message_timestamp,
+                    "support_count": support_count,
+                    "explicit_override": explicit_override,
                 }
                 if candidate is None:
                     candidates[key] = directive_data
                     continue
                 candidate["source_episode_ids"] = sorted(set(candidate["source_episode_ids"] + directive_data["source_episode_ids"]))
                 candidate["source_session_ids"] = sorted(set(candidate["source_session_ids"] + directive_data["source_session_ids"]))
+                candidate["support_count"] = int(candidate.get("support_count", 1)) + support_count
+                candidate["explicit_override"] = bool(candidate.get("explicit_override", False) or explicit_override)
                 if directive_data["last_observed_at"] > candidate["last_observed_at"]:
                     candidate["last_observed_at"] = directive_data["last_observed_at"]
                     candidate["content"] = clause
@@ -2715,14 +2936,63 @@ async def refresh_directives(
 
     upserted = 0
     emitted_keys: set[str] = set()
-    for candidate in candidates.values():
+    superseded = 0
+    conflict_skipped = 0
+    anti_thrash_window = reference_time - timedelta(hours=_DIRECTIVE_CONFLICT_WINDOW_HOURS)
+    ranked_candidates = sorted(
+        candidates.values(),
+        key=lambda item: (
+            int(item.get("support_count", 1)),
+            float(item.get("priority_score", 0.0)),
+            item.get("last_observed_at"),
+        ),
+        reverse=True,
+    )
+
+    for candidate in ranked_candidates:
+        conflicts: list[Any] = []
+        for existing in existing_by_key.values():
+            if existing.status is not DirectiveStatus.ACTIVE:
+                continue
+            if existing.directive_key == candidate["directive_key"]:
+                continue
+            if existing.kind.value != candidate["kind"]:
+                continue
+            if not _directives_conflict(candidate["content"], existing.content):
+                continue
+            conflicts.append(existing)
+
+        if conflicts:
+            recent_conflicts = [
+                conflict
+                for conflict in conflicts
+                if (conflict.last_observed_at or conflict.updated_at or conflict.created_at) >= anti_thrash_window
+            ]
+            support_count = int(candidate.get("support_count", 1))
+            explicit_override = bool(candidate.get("explicit_override", False))
+            if recent_conflicts and not explicit_override and support_count < _DIRECTIVE_CONFLICT_MIN_SUPPORT:
+                conflict_skipped += 1
+                continue
+            for conflict in conflicts:
+                updated_conflict = conflict.model_copy(
+                    update={
+                        "status": DirectiveStatus.SUPERSEDED,
+                        "priority_score": 0.0,
+                        "updated_at": reference_time,
+                        "last_observed_at": reference_time,
+                    }
+                )
+                await client.upsert_directive(updated_conflict)
+                existing_by_key[conflict.directive_key] = updated_conflict
+                superseded += 1
+
         await client.add_directive(
             kind=candidate["kind"],
             directive_key=candidate["directive_key"],
             title=candidate["title"],
             content=candidate["content"],
             status="active",
-            confidence=float(candidate["confidence"]),
+            confidence=min(0.99, float(candidate["confidence"]) + (0.02 * max(0, int(candidate.get("support_count", 1)) - 1))),
             priority_score=float(candidate["priority_score"]),
             source_episode_ids=candidate["source_episode_ids"],
             source_session_ids=candidate["source_session_ids"],
@@ -2731,10 +3001,13 @@ async def refresh_directives(
             agent_namespace=agent_namespace,
         )
         emitted_keys.add(candidate["directive_key"])
+        refreshed_active = await client.list_directives(limit=128, agent_namespace=agent_namespace, statuses=["active"])
+        latest = next((item for item in refreshed_active if item.directive_key == candidate["directive_key"]), None)
+        if latest is not None:
+            existing_by_key[latest.directive_key] = latest
         upserted += 1
 
-    superseded = 0
-    existing_directives = await client.list_directives(limit=64, agent_namespace=agent_namespace, statuses=["active"])
+    existing_directives = await client.list_directives(limit=128, agent_namespace=agent_namespace, statuses=["active"])
     for existing in existing_directives:
         if "derived" not in existing.tags:
             continue
@@ -2760,6 +3033,8 @@ async def refresh_directives(
         "directives_upserted": upserted,
         "directive_count": len(active_directives),
         "directives_superseded": superseded,
+        "directives_revoked": revoked,
+        "directives_conflict_skipped": conflict_skipped,
     }
 
 

@@ -767,6 +767,51 @@ async def test_enrich_context_includes_standing_directives() -> None:
 
 
 @pytest.mark.asyncio
+async def test_collect_enrichment_payload_reranks_directives_by_query_relevance() -> None:
+    _, _, transport = _build_client_with_transport()
+    transport.directives = [
+        Directive(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=DirectiveKind.COMMUNICATION,
+            scope=DirectiveScope.GLOBAL,
+            title="Style",
+            content="Always keep replies concise and natural.",
+            content_hash=uuid4().hex,
+            directive_key="auto:directive:style",
+            status=DirectiveStatus.ACTIVE,
+            confidence=0.95,
+            priority_score=1.0,
+            last_observed_at=_utcnow() - timedelta(days=1),
+        ),
+        Directive(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=DirectiveKind.TOOLING,
+            scope=DirectiveScope.GLOBAL,
+            title="Tooling",
+            content="Always run SQL migration checks before applying schema changes.",
+            content_hash=uuid4().hex,
+            directive_key="auto:directive:sql-migration",
+            status=DirectiveStatus.ACTIVE,
+            confidence=0.9,
+            priority_score=0.8,
+            last_observed_at=_utcnow(),
+        ),
+    ]
+
+    payload = await collect_enrichment_payload(
+        transport,
+        "before changing schema, should we run sql migration checks?",
+        platform="telegram",
+        agent_namespace="main",
+    )
+
+    assert payload.directives
+    assert payload.directives[0].kind is DirectiveKind.TOOLING
+
+
+@pytest.mark.asyncio
 async def test_enrich_context_includes_recent_major_events() -> None:
     _, _, transport = _build_client_with_transport()
     transport.timeline_events = [

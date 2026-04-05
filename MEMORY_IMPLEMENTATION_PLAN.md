@@ -16,7 +16,7 @@ It answers:
 ## Last Updated
 
 - Date: `2026-04-05`
-- Repository status: `green` (`199 passed, 10 skipped`)
+- Repository status: `green` (`204 passed, 10 skipped`)
 
 
 ## Executive Summary
@@ -38,8 +38,18 @@ The next moat is not adding niche fields. The moat is retrieval intelligence:
 - proactive intervention from historical analogues
 - optional graph layer for multi-hop reasoning after core retrieval quality is strong
 
+## Execution Mode: Solo But General
 
-## Current Production State
+Atlas is developed for a single primary user, but quality targets remain general-purpose.
+
+- avoid user-specific hacks or hardcoded personal assumptions
+- prefer generic memory primitives and retrieval policies that transfer beyond one persona
+- use diverse/adversarial/synthetic evaluation to prevent overfitting to local usage patterns
+- keep operations lightweight: strong local CI/eval loops over enterprise rollout ceremony
+- no dashboards by design: memory upgrades must come from conversation evidence + automated replay evaluation, not manual dashboard curation
+
+
+## Current Runtime State (Solo Build)
 
 ### Implemented and Live
 
@@ -172,7 +182,7 @@ Status: `Planned`
   - `memory.active_facts`
   - `memory.fact_timeline`
   - `memory.recent_context`
-- run for at least `14` days in staging and `14` days in production
+- run for at least `14` days of normal local usage plus CI replay runs
 
 ### Step 2: Soft Deprecation
 
@@ -271,8 +281,8 @@ Important:
 
 ### Active Workstreams
 
-1. Provider productization + seam hardening
-- upstream-safe Atlas provider productization path (avoid direct edits on linked `hermes-agent` upstream branch)
+1. Personal setup reliability + seam hardening
+- upstream-safe Atlas integration path (avoid direct edits on linked `hermes-agent` upstream branch)
 - cross-environment Atlas bridge path hardening and packaging checks
 - setup diagnostics for missing Atlas prerequisites
 
@@ -295,7 +305,7 @@ Important:
 - finalized Atlas-owned integration assets under `atlas/integrations/hermes/plugins/memory/atlas`
 - hardened Atlas provider runtime root discovery for integration/user-plugin locations (including `ATLAS_ROOT` override and `.venv` python fallback)
 - upstream-protection decision: reverted direct `hermes-agent` branch edits to avoid conflicts with upstream-linked branch workflow
-- schema decision: no DB schema migration required for this milestone; provider productization stays at integration/UX layer to remain retrieval-first and avoid niche schema churn
+- schema decision: no DB schema migration required for this milestone; setup/integration improvements stay at UX/runtime layer to remain retrieval-first and avoid niche schema churn
 - implemented retrieval planner skeleton in `memory.retrieval_planner` with semantic/lexical/temporal/analogous-case routing signals and per-route weights
 - integrated first reranker pass into enrichment episode selection using planner route weights (semantic + lexical overlap + temporal freshness blend)
 - added planner regression tests and enrichment retrieval-limit assertions (`tests/test_retrieval_planner.py`, `tests/test_enrichment.py`)
@@ -353,6 +363,13 @@ Important:
   - CI now runs this benchmark explicitly via `pytest tests/test_eval_harness_synthetic.py -q`
   - schema decision: no schema changes required; benchmark is test/runtime-eval only
 - validation: replay harness tests `7 passed`; atlas full suite `199 passed, 10 skipped`
+- implemented conversation-only adaptive directive upgrades (no dashboards):
+  - refresh-directives now learns communication behavior from explicit instructions and implicit user feedback phrases (for example: "too verbose", "too robotic")
+  - explicit revoke/forget phrases now retire matching standing directives directly from chat turns
+  - anti-thrash safeguards prevent rapid oscillation on conflicting directives unless reinforced or explicitly overridden
+  - enrichment now reranks standing directives per turn by relevance + confidence + recency to improve ambiguous retrieval behavior
+  - schema decision: no schema changes required; this is conversation-driven curation and retrieval-layer ranking only
+- validation: directive/enrichment targeted tests green; atlas full suite `204 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -449,12 +466,12 @@ Final Atlas is done when all are true:
 - assistant proactively warns on repeated failure patterns with evidence
 - long-horizon recall is measurable and regresses rarely due to CI gates
 - compatibility schema baggage is retired safely
-- provider setup is clean enough for non-authors to adopt
+- local setup is reproducible on a clean machine without brittle steps
 
 
 ## Immediate Next Actions
 
-1. [ ] finalize provider productization (`hermes memory setup` UX and docs) — pending upstream-safe landing path
+1. [ ] finalize personal setup reliability (`hermes memory setup` UX and docs) — pending upstream-safe landing path
 2. [x] implement retrieval planner skeleton and first reranker pass
 3. [x] define and migrate case-memory tables
 4. [x] make episode-first feature extraction the default memory processor path
