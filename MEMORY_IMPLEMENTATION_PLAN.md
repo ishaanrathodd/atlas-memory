@@ -15,8 +15,8 @@ It answers:
 
 ## Last Updated
 
-- Date: `2026-04-05`
-- Repository status: `green` (`225 passed, 10 skipped`)
+- Date: `2026-04-06`
+- Repository status: `green` (`225 passed, 10 skipped`; hermes setup-targeted `8 passed`)
 
 
 ## Executive Summary
@@ -174,30 +174,14 @@ Rationale:
 
 ## Redundant Schema Retirement Plan
 
-Status: `Planned`
+Status: `Completed` (compatibility views retired; rollback path documented)
 
-### Step 1: Usage Audit Window
+### Completion Notes
 
-- add temporary telemetry around SQL access for:
-  - `memory.active_facts`
-  - `memory.fact_timeline`
-  - `memory.recent_context`
-- run for at least `14` days of normal local usage plus CI replay runs
-
-### Step 2: Soft Deprecation
-
-- keep objects but mark as deprecated in migration comments/docs
-- route all internal code paths to base tables/RPCs only
-
-### Step 3: Remove Compatibility Views
-
-- drop deprecated views in a dedicated migration once external usage is confirmed zero
-- keep rollback migration ready to recreate views quickly if needed
-
-### Step 4: Migration Hygiene
-
-- consolidate duplicate function/view definitions into one canonical migration path for new installs
-- document base schema prerequisites explicitly for fresh environments
+- compatibility views retired via `2026-04-05_compatibility_view_retirement.sql`
+- canonical RPC/migration hygiene reasserted via `2026-04-05_migration_hygiene_cleanup.sql`
+- runtime/source guard added to prevent reintroduction of retired view dependencies
+- operational rollback SQL + apply-order verification documented in `docs/FINAL_PRODUCT_RUNBOOK.md`
 
 
 ## Retrieval-First Roadmap (Moat Work)
@@ -281,18 +265,14 @@ Important:
 
 ### Active Workstreams
 
-1. Personal setup reliability + seam hardening
-- upstream-safe Atlas integration path (avoid direct edits on linked `hermes-agent` upstream branch)
-- cross-environment Atlas bridge path hardening and packaging checks
-- setup diagnostics for missing Atlas prerequisites (`setup-diagnostics` runtime task shipped; setup UX/docs hardening pending)
+1. Post-closeout production rollout execution
+- apply migration sequence in target Supabase environment(s)
+- run post-migration verification SQL checks from `docs/FINAL_PRODUCT_RUNBOOK.md`
+- run one real-environment smoke cycle (`setup` + memory-enriched chat + trust-ops action + replay-eval)
 
-2. Retrieval intelligence
-- reranker improvements (second pass + evaluation tuning)
-- case memory quality tuning (ranking quality + pruning heuristics)
-
-3. Trust operations
-- forget / revoke / override UX
-- stronger uncertainty surfacing
+2. Optional quality expansion (not blocker for final-product closeout)
+- broader judge calibration tuning and sampled scenario mix
+- additional adversarial temporal/proactive replay coverage beyond current strict gates
 
 Status update (2026-04-05): trust-ops polish completed in retrieval output + eval scoring.
 - enrichment now emits explicit `Trust operations` guidance derived from trust-ledger certainty/freshness and quote coverage posture
@@ -427,6 +407,13 @@ Status update (2026-04-05): trust-ops polish completed in retrieval output + eva
     - Atlas full: `225 passed, 10 skipped`
     - Hermes targeted setup suites: `8 passed`
 
+### 2026-04-06 Revalidation Update
+
+- re-ran Atlas full suite: `225 passed, 10 skipped`
+- re-ran Hermes setup-targeted suites: `8 passed`
+- verified `hermes memory setup` command exits successfully in local workspace flow
+- schema decision: no additional schema changes since 2026-04-05 closeout; operationalization remains migration/runbook execution in target environments
+
 
 ## Evaluation and Quality Gates
 
@@ -537,9 +524,13 @@ Final Atlas is done when all are true:
 8. [x] add optional replay LLM-judge layer with CLI toggles (non-dashboard, enforce optional)
 9. [x] ship retrieval/trust hardening pass (second-pass rerank + certainty labels + proactive trigger confidence)
 
-Remaining blockers (2026-04-05 closeout):
+Remaining blockers (2026-04-06):
 
-- none identified; final-product closeout gates are green in this workspace snapshot.
+- no code blockers in this workspace; test and closeout gates are green
+- remaining operational work is environment rollout execution:
+  - run migration apply order on target DB
+  - run verification SQL checks
+  - run one production-like smoke cycle using `docs/FINAL_PRODUCT_RUNBOOK.md`
 
 
 ## Next Chat Continuation Protocol

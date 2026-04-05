@@ -8,7 +8,25 @@ Single operational runbook for:
 - clean-machine Atlas + Hermes integration setup
 - deterministic validation gates
 
+## Operator vs End-User Responsibilities
+
+This project uses BYO Supabase per user.
+
+1. BYO Supabase project (common distribution mode)
+- Each user connects Atlas to their own Supabase project.
+- Important: credentials alone are not enough on a fresh project.
+- That project needs Atlas schema initialized once (migration apply order in Section 1).
+- After schema is initialized, setup is simple for that user:
+  - Supabase project URL
+  - Supabase service role key
+  - embedding API key
+  - optional LLM model choice
+
 ## 1) Migration Rollout (Operational)
+
+Run this section when provisioning or upgrading a Supabase backend.
+
+- In BYO mode: each user (or your onboarding automation for that user) runs this once for their own project.
 
 Apply in this order (idempotent-safe for mixed environments):
 
