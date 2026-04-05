@@ -186,11 +186,18 @@ async def process_memory(
     min_message_count: int,
 ) -> dict[str, Any]:
     agent_namespace = get_agent_namespace()
+    root = Path(os.getenv("HERMES_HOME") or DEFAULT_HERMES_HOME).expanduser()
+    atlas_config = _read_atlas_config(root)
     summary_generation_enabled = str(os.getenv("MEMORY_ENABLE_SESSION_SUMMARIES", "0")).strip().lower() in {"1", "true", "yes", "on"}
     if summary_generation_enabled:
         llm_api_key = os.getenv("GLM_API_KEY") or os.getenv("OPENAI_API_KEY")
         llm_base_url = os.getenv("GLM_BASE_URL") or os.getenv("MEMORY_OPENAI_BASE_URL")
-        llm_model = os.getenv("MEMORY_SUMMARY_MODEL") or os.getenv("MEMORY_LLM_MODEL") or os.getenv("LLM_MODEL")
+        llm_model = (
+            os.getenv("MEMORY_SUMMARY_MODEL")
+            or os.getenv("MEMORY_LLM_MODEL")
+            or atlas_config.get("llm_model")
+            or os.getenv("LLM_MODEL")
+        )
         fact_pipeline = await consolidate_recent_sessions(
             client,
             lookback_hours=lookback_hours,
@@ -318,6 +325,17 @@ def _is_valid_http_url(value: str | None) -> bool:
         return False
     parsed = urlparse(str(value).strip())
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _read_atlas_config(root: Path) -> dict[str, Any]:
+    path = root / "atlas.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _read_hermes_default_llm(root: Path) -> str | None:
@@ -453,6 +471,7 @@ async def run_setup_diagnostics(
 ) -> dict[str, Any]:
     root = Path(hermes_home or os.getenv("HERMES_HOME") or DEFAULT_HERMES_HOME).expanduser()
     env_path = root / ".env"
+    atlas_config = _read_atlas_config(root)
 
     checks: list[dict[str, Any]] = []
     checks.append(
@@ -513,7 +532,13 @@ async def run_setup_diagnostics(
         )
     )
 
-    llm_model = os.getenv("MEMORY_SUMMARY_MODEL") or os.getenv("MEMORY_LLM_MODEL") or _read_hermes_default_llm(root) or os.getenv("LLM_MODEL")
+    llm_model = (
+        os.getenv("MEMORY_SUMMARY_MODEL")
+        or os.getenv("MEMORY_LLM_MODEL")
+        or atlas_config.get("llm_model")
+        or _read_hermes_default_llm(root)
+        or os.getenv("LLM_MODEL")
+    )
     checks.append(
         _diagnostic_entry(
             name="llm_model",
@@ -680,7 +705,12 @@ async def run_setup_workflow(
         "auto_fix": auto_fix,
         "interactive": bool(auto_fix and sys.stdin.isatty()),
         "actions": actions,
-        "selected_llm_model": selected_llm_model or os.getenv("MEMORY_LLM_MODEL") or _read_hermes_default_llm(root),
+        "selected_llm_model": (
+            selected_llm_model
+            or os.getenv("MEMORY_LLM_MODEL")
+            or _read_atlas_config(root).get("llm_model")
+            or _read_hermes_default_llm(root)
+        ),
         "ready": bool(diagnostics.get("ok")),
         "diagnostics": diagnostics,
         "next_steps": unresolved,
