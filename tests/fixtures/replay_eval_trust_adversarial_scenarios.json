@@ -169,5 +169,90 @@
         }
       ]
     }
+  },
+  {
+    "id": "proactive_temporal_strong_signal_emits_trigger_confidence",
+    "description": "Strong query-aligned risk/win history should emit calibrated proactive trigger confidence and a concrete better path.",
+    "user_message": "I am executing checkout migration rollout this week, what should I do differently now?",
+    "platform": "local",
+    "agent_namespace": "main",
+    "expect_contains": [
+      "Proactive coach notes:",
+      "Trigger confidence:",
+      "Past risk to avoid:",
+      "Proven better path:",
+      "Trust operations:"
+    ],
+    "min_counts": {
+      "trust_ledger_lines": 1,
+      "quote_coverage_lines": 1,
+      "proactive_coach_lines": 3,
+      "decision_outcomes": 2
+    },
+    "seed": {
+      "facts": [
+        {
+          "agent_namespace": "main",
+          "content": "User values regression-safe rollout execution.",
+          "category": "habit",
+          "tags": ["rollout", "reliability"],
+          "confidence": 0.9,
+          "updated_at": "2026-04-02T11:00:00Z"
+        }
+      ],
+      "decision_outcomes": [
+        {
+          "agent_namespace": "main",
+          "kind": "workflow",
+          "status": "failure",
+          "decision": "Attempted billing migration shortcuts without full replay coverage.",
+          "outcome": "Minor defects surfaced after deploy.",
+          "lesson": "Validate billing paths before scaling traffic.",
+          "importance_score": 0.4,
+          "confidence": 0.55,
+          "event_time": "2024-10-01T10:00:00Z",
+          "tags": ["billing", "migration"]
+        },
+        {
+          "agent_namespace": "main",
+          "kind": "workflow",
+          "status": "failure",
+          "decision": "Rushed checkout migration rollout without replay gate.",
+          "outcome": "Regression spike and rollback consumed two days.",
+          "lesson": "Replay and canary before broad traffic.",
+          "importance_score": 0.95,
+          "confidence": 0.95,
+          "event_time": "2026-04-04T12:00:00Z",
+          "tags": ["checkout", "migration", "rollout"]
+        },
+        {
+          "agent_namespace": "main",
+          "kind": "workflow",
+          "status": "success",
+          "decision": "Staged checkout rollout with replay harness and canary checks.",
+          "outcome": "No major regressions and reduced rollback risk.",
+          "lesson": "Start with replay gate, then canary, then gradual ramp.",
+          "importance_score": 0.92,
+          "confidence": 0.93,
+          "event_time": "2026-04-05T12:00:00Z",
+          "tags": ["checkout", "migration", "rollout"]
+        }
+      ],
+      "patterns": [
+        {
+          "agent_namespace": "main",
+          "pattern_type": "trap",
+          "statement": "Deadline pressure can outrun verification depth.",
+          "description": "Recurring rollout trap across incidents.",
+          "pattern_key": "eval:pattern:trust-adversarial-rollout-trap",
+          "confidence": 0.9,
+          "frequency_score": 0.82,
+          "impact_score": 0.9,
+          "first_observed_at": "2025-01-01T00:00:00Z",
+          "last_observed_at": "2026-04-05T00:00:00Z",
+          "tags": ["rollout", "verification", "deadline"]
+        }
+      ]
+    }
   }
 ]

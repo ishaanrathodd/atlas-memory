@@ -16,7 +16,7 @@ It answers:
 ## Last Updated
 
 - Date: `2026-04-05`
-- Repository status: `green` (`214 passed, 10 skipped`)
+- Repository status: `green` (`225 passed, 10 skipped`)
 
 
 ## Executive Summary
@@ -406,6 +406,26 @@ Status update (2026-04-05): trust-ops polish completed in retrieval output + eva
   - replay eval scorecard now includes `trust_calibration_rate` and tracks trust-op diagnostics per scenario
   - added `tests/fixtures/replay_eval_trust_adversarial_scenarios.json` and wired dedicated + synthetic benchmark coverage
   - added `2026-04-05_migration_hygiene_cleanup.sql` to reassert canonical `memory.search_episodes` and retire residual compatibility surfaces/signatures idempotently
+- final-product closeout completion pass (this session):
+  - added explicit user-facing trust operations runtime path in Atlas CLI:
+    - `python -m memory.curator_runtime trust-ops --trust-op forget|revoke|override`
+    - supports targeted directive correction via `--directive-key`/`--match-text` and manual overrides via `--directive-content`
+  - enrichment trust output now surfaces operator guidance for explicit forget/revoke/override correction workflow
+  - replay eval hardening extended:
+    - new adversarial proactive-temporal trust scenario with trigger-confidence expectations
+    - new judge-enforcement regression test for skipped judge state
+    - new universal scorecard regression test asserting trust-calibration threshold accounting
+    - added runtime assertion test to ensure no source-code dependence on retired compatibility views (`memory.active_facts`, `memory.fact_timeline`, `memory.recent_context`)
+  - Hermes setup reliability/product UX hardening completed:
+    - added fallback-path test proving Atlas setup runs with Hermes Python + `PYTHONPATH` injection when Atlas venv is absent
+    - aligned Atlas Python runtime selection order across setup/runtime plugin paths to prefer `.venv` before `venv`
+    - documented fail-fast Atlas setup (no legacy fallback) and runtime path behavior in plugin READMEs
+  - added clean-machine + migration operations runbook:
+    - `docs/FINAL_PRODUCT_RUNBOOK.md` includes migration apply order, rollback SQL, post-migration verification SQL, setup/diagnostics commands, replay gates, and smoke checks
+  - validation:
+    - Atlas targeted: `128 passed`
+    - Atlas full: `225 passed, 10 skipped`
+    - Hermes targeted setup suites: `8 passed`
 
 
 ## Evaluation and Quality Gates
@@ -507,7 +527,7 @@ Final Atlas is done when all are true:
 
 ## Immediate Next Actions
 
-1. [ ] finalize personal setup reliability (`hermes memory setup` UX and docs) — atlas-side one-command setup and diagnostics are live; hermes-side setup wizard integration/docs still pending
+1. [x] finalize personal setup reliability (`hermes memory setup` UX and docs) — atlas-side one-command setup and diagnostics are live; hermes-side setup wizard integration/docs and runtime path behavior completed
 2. [x] implement retrieval planner skeleton and first reranker pass
 3. [x] define and migrate case-memory tables
 4. [x] make episode-first feature extraction the default memory processor path
@@ -516,6 +536,10 @@ Final Atlas is done when all are true:
 7. [x] complete canonical identity conflict-resolution lifecycle (confirm/supersede/revoke semantics)
 8. [x] add optional replay LLM-judge layer with CLI toggles (non-dashboard, enforce optional)
 9. [x] ship retrieval/trust hardening pass (second-pass rerank + certainty labels + proactive trigger confidence)
+
+Remaining blockers (2026-04-05 closeout):
+
+- none identified; final-product closeout gates are green in this workspace snapshot.
 
 
 ## Next Chat Continuation Protocol

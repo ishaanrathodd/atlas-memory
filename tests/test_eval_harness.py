@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -234,3 +235,94 @@ async def test_run_replay_eval_judge_enforce_can_fail_even_when_deterministic_pa
     assert report["deterministic_meets_threshold"] is True
     assert report["judge_enforce"] is True
     assert report["meets_threshold"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_replay_eval_judge_enforce_fails_when_judge_is_skipped(monkeypatch: pytest.MonkeyPatch):
+    async def fake_judge(**kwargs):
+        _ = kwargs
+        return {
+            "enabled": True,
+            "status": "skipped",
+            "reason": "Judge API key not configured.",
+            "sampled_scenarios": 2,
+        }
+
+    monkeypatch.setattr(eval_harness, "_run_llm_judge", fake_judge)
+
+    report = await run_replay_eval(
+        scenarios_file="tests/fixtures/replay_eval_scenarios.json",
+        min_pass_rate=1.0,
+        enable_judge=True,
+        judge_enforce=True,
+    )
+
+    assert report["deterministic_meets_threshold"] is True
+    assert report["judge_enforce"] is True
+    assert report["judge_scorecard"]["status"] == "skipped"
+    assert report["meets_threshold"] is False
+
+
+@pytest.mark.asyncio
+async def test_universal_scorecard_flags_trust_calibration_regression(tmp_path: Path):
+    scenarios_file = tmp_path / "trust_calibration_regression.json"
+    scenarios_file.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "trust_high_certainty_stale_regression",
+                    "description": "Stale high-certainty evidence should fail trust calibration even when deterministic checks pass.",
+                    "user_message": "what should i remember about my rollout approach?",
+                    "agent_namespace": "main",
+                    "expect_contains": [
+                        "Trust ledger (source tags + freshness):",
+                        "Trust operations:",
+                        "this marker should not appear",
+                    ],
+                    "min_counts": {
+                        "trust_ledger_lines": 1,
+                        "quote_coverage_lines": 1,
+                    },
+                    "seed": {
+                        "facts": [
+                            {
+                                "content": "Historical rollout policy used replay gates.",
+                                "category": "project",
+                                "confidence": 0.97,
+                                "tags": ["rollout", "reliability"],
+                                "updated_at": "2020-01-01T00:00:00Z",
+                            }
+                        ]
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = await run_replay_eval(scenarios_file=scenarios_file, min_pass_rate=1.0)
+
+    assert report["deterministic_meets_threshold"] is False
+    scorecard = report["universal_outcome_scorecard"]
+    assert scorecard["trust_calibration_rate"]["required"] == 1
+    assert scorecard["trust_calibration_rate"]["pass_rate"] == 0.0
+    assert scorecard["overall_score"]["all_metrics_green"] is False
+    assert "trust_calibration_rate" in scorecard["overall_score"]["metrics_below_threshold"]
+
+
+def test_runtime_code_does_not_reference_retired_compatibility_views() -> None:
+    retired_references = (
+        "memory.active_facts",
+        "memory.fact_timeline",
+        "memory.recent_context",
+    )
+    src_root = Path(__file__).resolve().parent.parent / "src" / "memory"
+    violations: list[str] = []
+
+    for path in src_root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for reference in retired_references:
+            if reference in text:
+                violations.append(f"{path.relative_to(src_root.parent.parent)} -> {reference}")
+
+    assert not violations, "Runtime code still references retired compatibility views: " + ", ".join(violations)

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 import getpass
+import hashlib
 import importlib.util
 import json
 import os
@@ -32,6 +33,7 @@ from memory.emotions import EmotionAnalyzer
 from memory.embedding import OpenAIEmbeddingProvider
 from memory.eval_harness import run_replay_eval
 from memory.instance_identity import get_agent_namespace
+from memory.models import DirectiveKind, DirectiveScope, DirectiveStatus
 from memory.observability import record_task_observability
 from memory.transport import SupabaseTransport
 
@@ -664,6 +666,121 @@ def _collect_setup_inputs(root: Path) -> dict[str, str]:
     return values
 
 
+def _directive_key_for_manual_trust_override(content: str) -> str:
+    normalized = " ".join(str(content or "").strip().lower().split())
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"manual:trust-op:{digest}"
+
+
+async def run_trust_ops(
+    client: MemoryClient,
+    *,
+    trust_op: str,
+    directive_key: str | None = None,
+    match_text: str | None = None,
+    directive_content: str | None = None,
+    directive_kind: str = DirectiveKind.COMMUNICATION.value,
+    directive_scope: str = DirectiveScope.GLOBAL.value,
+) -> dict[str, Any]:
+    op = str(trust_op or "").strip().lower()
+    if op not in {"forget", "revoke", "override"}:
+        raise ValueError("trust-ops requires --trust-op {forget,revoke,override}.")
+
+    now = datetime.now(timezone.utc)
+    agent_namespace = get_agent_namespace()
+    active_directives = await client.list_directives(
+        limit=128,
+        agent_namespace=agent_namespace,
+        statuses=[DirectiveStatus.ACTIVE.value],
+    )
+
+    normalized_key = str(directive_key or "").strip()
+    normalized_match = str(match_text or "").strip().lower()
+    if op in {"forget", "revoke"} and not normalized_key and not normalized_match:
+        raise ValueError("forget/revoke requires --directive-key or --match-text.")
+
+    matched: list[Any] = []
+    for directive in active_directives:
+        key_match = bool(normalized_key) and directive.directive_key == normalized_key
+        match_match = bool(normalized_match) and (
+            normalized_match in directive.content.lower()
+            or normalized_match in str(directive.title or "").lower()
+        )
+        if key_match or match_match:
+            matched.append(directive)
+
+    changed_existing = 0
+    changed_keys: list[str] = []
+    if matched:
+        updated_status = DirectiveStatus.REVOKED if op in {"forget", "revoke"} else DirectiveStatus.SUPERSEDED
+        for directive in matched:
+            updated_tags = list(dict.fromkeys([*directive.tags, "trust-op", f"trust-op:{op}"]))
+            updated = directive.model_copy(
+                update={
+                    "status": updated_status,
+                    "updated_at": now,
+                    "last_observed_at": now,
+                    "tags": updated_tags,
+                }
+            )
+            await client.upsert_directive(updated)
+            changed_existing += 1
+            changed_keys.append(updated.directive_key)
+
+    created_override_key: str | None = None
+    if op == "override":
+        normalized_content = str(directive_content or "").strip()
+        if not normalized_content:
+            raise ValueError("override requires --directive-content.")
+
+        resolved_kind = str(directive_kind or DirectiveKind.COMMUNICATION.value).strip().lower()
+        resolved_scope = str(directive_scope or DirectiveScope.GLOBAL.value).strip().lower()
+        if resolved_kind not in {kind.value for kind in DirectiveKind}:
+            raise ValueError("override --directive-kind must be one of: behavior, communication, tooling, memory.")
+        if resolved_scope not in {scope.value for scope in DirectiveScope}:
+            raise ValueError("override --directive-scope must be one of: global, project, session.")
+
+        created_override_key = _directive_key_for_manual_trust_override(normalized_content)
+        await client.add_directive(
+            kind=resolved_kind,
+            scope=resolved_scope,
+            content=normalized_content,
+            directive_key=created_override_key,
+            title="Manual trust override",
+            status=DirectiveStatus.ACTIVE.value,
+            confidence=0.98,
+            priority_score=1.1,
+            tags=["trust-op", "trust-op:override", "user-issued"],
+            last_observed_at=now,
+            agent_namespace=agent_namespace,
+        )
+
+    active_after = await client.list_directives(
+        limit=32,
+        agent_namespace=agent_namespace,
+        statuses=[DirectiveStatus.ACTIVE.value],
+    )
+    return {
+        "task": "trust-ops",
+        "operation": op,
+        "agent_namespace": agent_namespace,
+        "matched": len(matched),
+        "changed_existing": changed_existing,
+        "changed_keys": changed_keys,
+        "created_override_key": created_override_key,
+        "active_directive_count": len(active_after),
+        "active_directives_preview": [
+            {
+                "directive_key": directive.directive_key,
+                "content": directive.content,
+                "kind": directive.kind.value,
+                "scope": directive.scope.value,
+            }
+            for directive in active_after[:8]
+        ],
+    }
+
+
 async def run_setup_workflow(
     *,
     client: MemoryClient | None,
@@ -730,6 +847,12 @@ async def run_task(
     judge_enforce: bool | None = None,
     judge_model: str | None = None,
     judge_sample_limit: int | None = None,
+    trust_op: str | None = None,
+    directive_key: str | None = None,
+    match_text: str | None = None,
+    directive_content: str | None = None,
+    directive_kind: str | None = None,
+    directive_scope: str | None = None,
     auto_fix: bool = True,
 ) -> dict[str, Any]:
     if task == "replay-eval":
@@ -798,6 +921,16 @@ async def run_task(
             return await collect_stats(active_client)
         if task == "health":
             return {"ok": await active_client.health_check()}
+        if task == "trust-ops":
+            return await run_trust_ops(
+                active_client,
+                trust_op=str(trust_op or ""),
+                directive_key=directive_key,
+                match_text=match_text,
+                directive_content=directive_content,
+                directive_kind=directive_kind or DirectiveKind.COMMUNICATION.value,
+                directive_scope=directive_scope or DirectiveScope.GLOBAL.value,
+            )
         raise ValueError(f"Unknown task: {task}")
     finally:
         if owns_client:
@@ -808,7 +941,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m memory.curator_runtime")
     parser.add_argument(
         "task",
-        choices=("process-memory", "extract-facts", "backfill", "stats", "health", "replay-eval", "setup-diagnostics", "setup"),
+        choices=("process-memory", "extract-facts", "backfill", "stats", "health", "replay-eval", "setup-diagnostics", "setup", "trust-ops"),
     )
     parser.add_argument("--lookback-hours", type=int)
     parser.add_argument("--min-message-count", type=int)
@@ -818,6 +951,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-enforce", action="store_true")
     parser.add_argument("--judge-model")
     parser.add_argument("--judge-sample-limit", type=int)
+    parser.add_argument("--trust-op", choices=("forget", "revoke", "override"))
+    parser.add_argument("--directive-key")
+    parser.add_argument("--match-text")
+    parser.add_argument("--directive-content")
+    parser.add_argument("--directive-kind", choices=("behavior", "communication", "tooling", "memory"))
+    parser.add_argument("--directive-scope", choices=("global", "project", "session"))
     parser.add_argument("--no-auto-fix", action="store_true")
     return parser
 
@@ -841,6 +980,12 @@ def main(argv: list[str] | None = None) -> int:
                 judge_enforce=args.judge_enforce,
                 judge_model=args.judge_model,
                 judge_sample_limit=args.judge_sample_limit,
+                trust_op=args.trust_op,
+                directive_key=args.directive_key,
+                match_text=args.match_text,
+                directive_content=args.directive_content,
+                directive_kind=args.directive_kind,
+                directive_scope=args.directive_scope,
                 auto_fix=not args.no_auto_fix,
             )
         )

@@ -2245,6 +2245,7 @@ async def test_enrich_context_emits_trust_ledger_with_source_tags_and_freshness(
     assert "certainty=" in context
     assert "Trust operations:" in context
     assert "Trust mix:" in context
+    assert "python -m memory.curator_runtime trust-ops" in context
     assert "Quote coverage checks:" in context
     assert "quote_status=no-quote-available" in context
 
@@ -2350,3 +2351,4 @@ async def test_enrich_context_trust_ops_warns_on_stale_background_evidence() -> 
     assert "freshness=stale(>=30d)" in context
     assert "Trust operations:" in context
     assert "Treat stale/low-certainty memory as background context until fresh evidence confirms it." in context
+    assert "python -m memory.curator_runtime trust-ops" in context

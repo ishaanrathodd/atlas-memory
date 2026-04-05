@@ -2302,6 +2302,27 @@ def test_cli_parser_accepts_supported_tasks() -> None:
     setup_no_fix_args = parser.parse_args(["setup", "--no-auto-fix"])
     assert setup_no_fix_args.no_auto_fix is True
 
+    trust_ops_args = parser.parse_args(
+        [
+            "trust-ops",
+            "--trust-op",
+            "override",
+            "--match-text",
+            "concise",
+            "--directive-content",
+            "Use concise bullet responses.",
+            "--directive-kind",
+            "communication",
+            "--directive-scope",
+            "global",
+        ]
+    )
+    assert trust_ops_args.task == "trust-ops"
+    assert trust_ops_args.trust_op == "override"
+    assert trust_ops_args.match_text == "concise"
+    assert trust_ops_args.directive_kind == "communication"
+    assert trust_ops_args.directive_scope == "global"
+
 
 def test_runtime_main_dispatches_task_and_prints_json(
     monkeypatch: pytest.MonkeyPatch,
@@ -2320,6 +2341,12 @@ def test_runtime_main_dispatches_task_and_prints_json(
         judge_enforce: bool | None = None,
         judge_model: str | None = None,
         judge_sample_limit: int | None = None,
+        trust_op: str | None = None,
+        directive_key: str | None = None,
+        match_text: str | None = None,
+        directive_content: str | None = None,
+        directive_kind: str | None = None,
+        directive_scope: str | None = None,
         auto_fix: bool = True,
         state_db_path: str | Path | None = None,
         source: str | None = None,
@@ -2333,6 +2360,12 @@ def test_runtime_main_dispatches_task_and_prints_json(
             judge_enforce,
             judge_model,
             judge_sample_limit,
+            trust_op,
+            directive_key,
+            match_text,
+            directive_content,
+            directive_kind,
+            directive_scope,
             auto_fix,
             state_db_path,
             source,
@@ -2552,6 +2585,118 @@ async def test_run_task_replay_eval_uses_harness(monkeypatch: pytest.MonkeyPatch
 
     assert result["task"] == "replay-eval"
     assert result["meets_threshold"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_task_trust_ops_forget_revokes_matching_directive() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+    agent_namespace = get_agent_namespace()
+
+    await transport.upsert_directive(
+        Directive(
+            id=uuid4(),
+            agent_namespace=agent_namespace,
+            kind="communication",
+            scope="global",
+            title="Response style",
+            content="Use concise direct responses for operational updates.",
+            content_hash="hash-1",
+            directive_key="manual:test:concise",
+            status="active",
+            confidence=0.9,
+            priority_score=1.0,
+            tags=["manual"],
+            created_at=now,
+            updated_at=now,
+            last_observed_at=now,
+        )
+    )
+
+    result = await runtime.run_task(
+        "trust-ops",
+        client=client,
+        trust_op="forget",
+        match_text="concise direct responses",
+    )
+
+    assert result["task"] == "trust-ops"
+    assert result["operation"] == "forget"
+    assert result["matched"] == 1
+    assert result["changed_existing"] == 1
+
+    active_directives = await client.list_directives(
+        limit=20,
+        agent_namespace=agent_namespace,
+        statuses=["active"],
+    )
+    assert all("concise direct responses" not in directive.content.lower() for directive in active_directives)
+
+    revoked_directives = await client.list_directives(
+        limit=20,
+        agent_namespace=agent_namespace,
+        statuses=["revoked"],
+    )
+    assert any("concise direct responses" in directive.content.lower() for directive in revoked_directives)
+
+
+@pytest.mark.asyncio
+async def test_run_task_trust_ops_override_supersedes_and_creates_active_directive() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+    agent_namespace = get_agent_namespace()
+
+    await transport.upsert_directive(
+        Directive(
+            id=uuid4(),
+            agent_namespace=agent_namespace,
+            kind="communication",
+            scope="global",
+            title="Response style",
+            content="Keep responses very long and exploratory.",
+            content_hash="hash-2",
+            directive_key="manual:test:verbose",
+            status="active",
+            confidence=0.86,
+            priority_score=1.0,
+            tags=["manual"],
+            created_at=now,
+            updated_at=now,
+            last_observed_at=now,
+        )
+    )
+
+    result = await runtime.run_task(
+        "trust-ops",
+        client=client,
+        trust_op="override",
+        match_text="very long and exploratory",
+        directive_content="Use concise bullet responses for rollout guidance.",
+        directive_kind="communication",
+        directive_scope="global",
+    )
+
+    assert result["task"] == "trust-ops"
+    assert result["operation"] == "override"
+    assert result["changed_existing"] == 1
+    assert result["created_override_key"]
+    assert result["active_directive_count"] >= 1
+
+    superseded_directives = await client.list_directives(
+        limit=20,
+        agent_namespace=agent_namespace,
+        statuses=["superseded"],
+    )
+    assert any("very long and exploratory" in directive.content.lower() for directive in superseded_directives)
+
+    active_directives = await client.list_directives(
+        limit=20,
+        agent_namespace=agent_namespace,
+        statuses=["active"],
+    )
+    assert any("concise bullet responses for rollout guidance" in directive.content.lower() for directive in active_directives)
 
 
 @pytest.mark.asyncio

@@ -94,8 +94,8 @@ def _atlas_root() -> Path:
 def _atlas_python() -> Path:
     atlas_root = _atlas_root()
     for candidate in (
-        atlas_root / "venv" / "bin" / "python",
         atlas_root / ".venv" / "bin" / "python",
+        atlas_root / "venv" / "bin" / "python",
     ):
         if candidate.exists():
             return candidate

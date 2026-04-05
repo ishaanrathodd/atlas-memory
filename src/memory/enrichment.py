@@ -1813,6 +1813,10 @@ def _build_trust_ops_lines(
     else:
         lines.append("Grounding posture: no quote-backed snippets; avoid over-precise claim wording.")
 
+    lines.append(
+        "Operator path: run `python -m memory.curator_runtime trust-ops --trust-op forget|revoke|override ...` for explicit trust memory corrections."
+    )
+
     deduped: list[str] = []
     seen: set[str] = set()
     for line in lines:
@@ -1821,7 +1825,7 @@ def _build_trust_ops_lines(
             continue
         seen.add(normalized)
         deduped.append(line)
-    return deduped[:4]
+    return deduped[:5]
 
 
 def _extract_requested_iso_week(value: str) -> tuple[int, int] | None:
