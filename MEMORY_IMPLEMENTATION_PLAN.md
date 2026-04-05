@@ -266,9 +266,10 @@ Important:
 
 ### Active Workstreams
 
-1. Provider productization
-- polished Atlas provider setup flow under `hermes memory setup`
-- external-provider seam hardening
+1. Provider productization + seam hardening
+- upstream-safe Atlas provider productization path (avoid direct edits on linked `hermes-agent` upstream branch)
+- cross-environment Atlas bridge path hardening and packaging checks
+- setup diagnostics for missing Atlas prerequisites
 
 2. Retrieval intelligence
 - retrieval planner
@@ -283,6 +284,15 @@ Important:
 
 - full graph indexing complexity before retrieval core maturity
 - broad schema expansion that does not move retrieval quality metrics
+
+
+### 2026-04-05 Milestone Update
+
+- finalized Atlas-owned integration assets under `atlas/integrations/hermes/plugins/memory/atlas`
+- hardened Atlas provider runtime root discovery for integration/user-plugin locations (including `ATLAS_ROOT` override and `.venv` python fallback)
+- upstream-protection decision: reverted direct `hermes-agent` branch edits to avoid conflicts with upstream-linked branch workflow
+- schema decision: no DB schema migration required for this milestone; provider productization stays at integration/UX layer to remain retrieval-first and avoid niche schema churn
+- validation: atlas targeted suite `90 passed`; atlas full suite `178 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -348,9 +358,78 @@ Final Atlas is done when all are true:
 
 ## Immediate Next Actions
 
-1. finalize provider productization (`hermes memory setup` UX and docs)
-2. implement retrieval planner skeleton and first reranker pass
-3. define and migrate case-memory tables
-4. add long-horizon LLM eval suite (alongside deterministic replay)
-5. begin compatibility-view deprecation telemetry
+1. [ ] finalize provider productization (`hermes memory setup` UX and docs) — pending upstream-safe landing path
+2. [ ] implement retrieval planner skeleton and first reranker pass
+3. [ ] define and migrate case-memory tables
+4. [ ] add long-horizon LLM eval suite (alongside deterministic replay)
+5. [ ] begin compatibility-view deprecation telemetry
+
+
+## Next Chat Continuation Protocol
+
+Use this section whenever work continues in a new chat.
+
+### Continuation Workflow
+
+1. Re-open this file first and treat it as the source of truth.
+2. Re-validate repository status before edits:
+- run full tests
+- confirm current migration state
+- confirm no drift in key memory pipelines
+3. Continue from `Immediate Next Actions` in order unless a blocker is discovered.
+4. Keep changes retrieval-first:
+- avoid niche one-off schema hacks
+- prefer improvements that move long-horizon retrieval metrics
+5. After each milestone:
+- update this document (status + what changed)
+- run targeted tests + full suite
+- record any schema/migration decisions here
+
+### Context Files For Next Chat
+
+Minimum files to load before implementation:
+
+- `atlas/MEMORY_IMPLEMENTATION_PLAN.md`
+- `atlas/MEMORY_REDESIGN.md`
+- `atlas/src/memory/client.py`
+- `atlas/src/memory/transport.py`
+- `atlas/src/memory/consolidation.py`
+- `atlas/src/memory/enrichment.py`
+- `atlas/src/memory/eval_harness.py`
+- `atlas/tests/test_curator_runtime.py`
+- `atlas/tests/test_enrichment.py`
+- `atlas/tests/test_eval_harness.py`
+- `atlas/tests/fixtures/replay_eval_scenarios.json`
+- `atlas/migrations/2026-04-03_memory_schema_transition.sql`
+- `atlas/migrations/2026-04-03_platform_text.sql`
+- `atlas/migrations/2026-04-03_agent_namespace_hardening.sql`
+
+### Copy-Paste Prompt For Next Chat
+
+```text
+Continue Atlas memory implementation from source-of-truth plan.
+
+Read these files first:
+- atlas/MEMORY_IMPLEMENTATION_PLAN.md
+- atlas/MEMORY_REDESIGN.md
+- atlas/src/memory/client.py
+- atlas/src/memory/transport.py
+- atlas/src/memory/consolidation.py
+- atlas/src/memory/enrichment.py
+- atlas/src/memory/eval_harness.py
+- atlas/tests/test_curator_runtime.py
+- atlas/tests/test_enrichment.py
+- atlas/tests/test_eval_harness.py
+- atlas/tests/fixtures/replay_eval_scenarios.json
+- atlas/migrations/2026-04-03_memory_schema_transition.sql
+- atlas/migrations/2026-04-03_platform_text.sql
+- atlas/migrations/2026-04-03_agent_namespace_hardening.sql
+
+Then:
+1) Validate current state (run tests, summarize pass/fail, note drift).
+2) Execute the next unchecked item from “Immediate Next Actions” in MEMORY_IMPLEMENTATION_PLAN.md.
+3) Keep implementation retrieval-first; avoid niche schema hacks.
+4) Update MEMORY_IMPLEMENTATION_PLAN.md with progress and any schema decisions.
+5) Run targeted + full tests and report results.
+```
 

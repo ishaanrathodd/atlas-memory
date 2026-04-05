@@ -54,13 +54,51 @@ def _plugin_root() -> Path:
 
 
 def _atlas_root() -> Path:
-    return _plugin_root().parents[4]
+    override = os.environ.get("ATLAS_ROOT")
+    if override:
+        candidate = Path(override).expanduser().resolve()
+        if (candidate / "src" / "memory" / "bridge_server.py").exists():
+            return candidate
+
+    plugin_root = _plugin_root()
+    hermes_home = _hermes_home_path()
+    candidates: list[Path] = []
+
+    # atlas/integrations/hermes/plugins/memory/atlas/__init__.py -> atlas/
+    if len(plugin_root.parents) > 5:
+        candidates.append(plugin_root.parents[5])
+    # hermes-agent/plugins/memory/atlas/__init__.py -> ~/.hermes/atlas
+    if len(plugin_root.parents) > 4:
+        candidates.append(plugin_root.parents[4] / "atlas")
+
+    candidates.extend(
+        [
+            hermes_home / "atlas",
+            Path.cwd() / "atlas",
+        ]
+    )
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if (resolved / "src" / "memory" / "bridge_server.py").exists():
+            return resolved
+
+    # Fallback keeps diagnostics deterministic for status checks and logs.
+    return (hermes_home / "atlas").expanduser().resolve()
 
 
 def _atlas_python() -> Path:
-    candidate = _atlas_root() / "venv" / "bin" / "python"
-    if candidate.exists():
-        return candidate
+    atlas_root = _atlas_root()
+    for candidate in (
+        atlas_root / "venv" / "bin" / "python",
+        atlas_root / ".venv" / "bin" / "python",
+    ):
+        if candidate.exists():
+            return candidate
     return Path(sys.executable)
 
 
