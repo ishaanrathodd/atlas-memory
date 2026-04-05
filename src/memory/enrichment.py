@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Sequence
 
 from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, Pattern, PatternType, Reflection, ReflectionStatus, Session, SessionHandoff, TimelineEvent
+from memory.retrieval_planner import RetrievalSignals, build_retrieval_plan, rerank_items_first_pass
 from memory.transport import (
     MemoryTransport,
     _looks_like_operational_content,
@@ -2107,17 +2108,44 @@ async def collect_enrichment_payload(
     agent_namespace: str | None = None,
 ) -> EnrichmentPayload:
     _ = platform
+    query_tokens = _tokenize(user_message)
+    requested_iso_week = _extract_requested_iso_week(user_message)
     exact_recall_query = _query_targets_exact_text_recall(user_message)
     active_state_inspection_query = _query_targets_active_state_inspection(user_message)
-    relevant_episode_limit = MAX_EXACT_RELEVANT_EPISODES if exact_recall_query else EPISODE_SEARCH_LIMIT
-    recent_episode_limit = MAX_EXACT_RECENT_EPISODES if exact_recall_query else MAX_RECENT_EPISODES
+    low_signal_query = _query_is_low_signal(user_message)
+    advice_query = _query_targets_advice(user_message)
+    memory_query = _query_targets_memory_context(user_message)
+    delivery_memory_query = _query_targets_delivery_memory(user_message)
+    continuity_query = _query_targets_continuity(user_message)
+    project_query = _query_targets_project_context(user_message) or memory_query
+    patterns_query = _query_targets_patterns(user_message)
+    reflections_query = _query_targets_reflections(user_message)
+    timeline_query = _query_targets_timeline(user_message) or requested_iso_week is not None
+    commitments_query = _query_targets_commitments(user_message) or advice_query
+    proactive_coaching_query = _query_needs_proactive_coaching(user_message)
+
+    retrieval_plan = build_retrieval_plan(
+        signals=RetrievalSignals(
+            exact_recall_query=exact_recall_query,
+            timeline_query=timeline_query,
+            advice_query=advice_query,
+            patterns_query=patterns_query,
+            reflections_query=reflections_query,
+            continuity_query=continuity_query,
+        ),
+        default_relevant_episode_limit=EPISODE_SEARCH_LIMIT,
+        default_recent_episode_limit=MAX_RECENT_EPISODES,
+        default_timeline_fetch_limit=12,
+        exact_relevant_episode_limit=MAX_EXACT_RELEVANT_EPISODES,
+        exact_recent_episode_limit=MAX_EXACT_RECENT_EPISODES,
+    )
 
     session_task = transport.get_session(active_session_id) if active_session_id is not None else None
     facts_task = transport.search_facts(limit=FACT_SEARCH_LIMIT, agent_namespace=agent_namespace)
     directives_task = transport.list_directives(limit=8, agent_namespace=agent_namespace, statuses=["active"])
     commitments_task = transport.list_commitments(limit=12, agent_namespace=agent_namespace, statuses=["open"])
     corrections_task = transport.list_corrections(limit=12, agent_namespace=agent_namespace, active_only=True)
-    timeline_task = transport.list_timeline_events(limit=12, agent_namespace=agent_namespace)
+    timeline_task = transport.list_timeline_events(limit=retrieval_plan.timeline_fetch_limit, agent_namespace=agent_namespace)
     outcomes_task = transport.list_decision_outcomes(limit=24, agent_namespace=agent_namespace)
     patterns_task = transport.list_patterns(limit=24, agent_namespace=agent_namespace)
     reflections_task = transport.list_reflections(
@@ -2133,13 +2161,13 @@ async def collect_enrichment_payload(
     )
     relevant_episodes_task = transport.search_episodes(
         query=user_message,
-        limit=relevant_episode_limit,
+        limit=retrieval_plan.relevant_episode_limit,
         platform=None,
         days_back=EPISODE_SEARCH_DAYS_BACK,
         agent_namespace=agent_namespace,
     )
     recent_episodes_task = transport.list_recent_episodes(
-        limit=recent_episode_limit,
+        limit=retrieval_plan.recent_episode_limit,
         platform=None,
         exclude_session_id=active_session_id,
         agent_namespace=agent_namespace,
@@ -2178,19 +2206,6 @@ async def collect_enrichment_payload(
             session_task,
         )
 
-    query_tokens = _tokenize(user_message)
-    requested_iso_week = _extract_requested_iso_week(user_message)
-    low_signal_query = _query_is_low_signal(user_message)
-    advice_query = _query_targets_advice(user_message)
-    memory_query = _query_targets_memory_context(user_message)
-    delivery_memory_query = _query_targets_delivery_memory(user_message)
-    continuity_query = _query_targets_continuity(user_message)
-    project_query = _query_targets_project_context(user_message) or memory_query
-    patterns_query = _query_targets_patterns(user_message)
-    reflections_query = _query_targets_reflections(user_message)
-    timeline_query = _query_targets_timeline(user_message) or requested_iso_week is not None
-    commitments_query = _query_targets_commitments(user_message) or advice_query
-    proactive_coaching_query = _query_needs_proactive_coaching(user_message)
     ranked_facts = sorted(
         [
             fact
@@ -2245,7 +2260,15 @@ async def collect_enrichment_payload(
         ]
     if low_signal_query:
         ranked_relevant_episodes = []
-    ranked_relevant_episodes = ranked_relevant_episodes[:MAX_RELEVANT_EPISODES]
+    ranked_relevant_episodes = rerank_items_first_pass(
+        ranked_relevant_episodes,
+        semantic_score=lambda episode: _episode_relevance_score(episode, query_tokens),
+        lexical_overlap=lambda episode: _token_overlap_count(query_tokens, _tokenize(episode.content)),
+        event_time=lambda episode: episode.message_timestamp,
+        semantic_weight=retrieval_plan.route_weight("semantic", default=1.0),
+        lexical_weight=retrieval_plan.route_weight("lexical", default=0.0),
+        temporal_weight=retrieval_plan.route_weight("temporal", default=0.0),
+    )[:MAX_RELEVANT_EPISODES]
 
     handoff_recent_candidates = _continuity_candidate_episodes(recent_episodes, corrections)
     handoff_recent_session_id = _recent_session_id_for_handoff(handoff_recent_candidates)

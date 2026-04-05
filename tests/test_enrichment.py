@@ -55,6 +55,8 @@ class MockTransport:
         self.touched_facts: list[str] = []
         self.last_search_episodes_platform: str | None | object = "__unset__"
         self.last_recent_episodes_platform: str | None | object = "__unset__"
+        self.last_search_episodes_limit: int | None = None
+        self.last_recent_episodes_limit: int | None = None
         self.last_search_episodes_namespace: str | None | object = "__unset__"
         self.last_recent_episodes_namespace: str | None | object = "__unset__"
         self.last_search_facts_namespace: str | None | object = "__unset__"
@@ -75,6 +77,7 @@ class MockTransport:
         self.last_list_commitments_namespace: str | None | object = "__unset__"
         self.last_list_corrections_namespace: str | None | object = "__unset__"
         self.last_list_timeline_namespace: str | None | object = "__unset__"
+        self.last_list_timeline_limit: int | None = None
         self.last_list_handoffs_namespace: str | None | object = "__unset__"
 
     async def insert_session(self, session: Session) -> Session:
@@ -136,6 +139,7 @@ class MockTransport:
         agent_namespace: str | None = None,
     ) -> list[Episode]:
         _ = (query, days_back)
+        self.last_search_episodes_limit = limit
         self.last_search_episodes_platform = platform
         self.last_search_episodes_namespace = agent_namespace
         episodes = list(self.episodes)
@@ -156,6 +160,7 @@ class MockTransport:
         exclude_session_id: str | None = None,
         agent_namespace: str | None = None,
     ) -> list[Episode]:
+        self.last_recent_episodes_limit = limit
         self.last_recent_episodes_platform = platform
         self.last_recent_episodes_namespace = agent_namespace
         episodes = list(self.episodes)
@@ -222,6 +227,7 @@ class MockTransport:
         return event
 
     async def list_timeline_events(self, limit: int = 10, agent_namespace: str | None = None):
+        self.last_list_timeline_limit = limit
         self.last_list_timeline_namespace = agent_namespace
         events = sorted(self.timeline_events, key=lambda event: event.event_time, reverse=True)
         return events[:limit]
@@ -455,6 +461,9 @@ async def test_collect_enrichment_payload_ranks_facts_and_limits_recent_episodes
     assert str(project_fact.id) in transport.touched_facts
     assert transport.last_search_episodes_platform is None
     assert transport.last_recent_episodes_platform is None
+    assert transport.last_search_episodes_limit == 12
+    assert transport.last_recent_episodes_limit == 3
+    assert transport.last_list_timeline_limit == 12
     assert transport.last_search_episodes_namespace == "main"
     assert transport.last_recent_episodes_namespace == "main"
     assert transport.last_search_facts_namespace == "main"
@@ -1512,6 +1521,23 @@ async def test_collect_enrichment_payload_surfaces_reflections_for_introspective
     assert payload.reflections
     assert payload.reflections[0].reflection_key == "auto:reflection:test-blind-spot"
     assert transport.last_list_reflections_namespace == "main"
+
+
+@pytest.mark.asyncio
+async def test_collect_enrichment_payload_exact_recall_expands_retrieval_limits() -> None:
+    _, _, transport = _build_client_with_transport()
+
+    payload = await collect_enrichment_payload(
+        transport,
+        "what were my last few messages before this session?",
+        platform="local",
+        active_session_id=str(uuid4()),
+        agent_namespace="main",
+    )
+
+    assert payload.exact_recall_mode is True
+    assert transport.last_search_episodes_limit == 24
+    assert transport.last_recent_episodes_limit == 24
 
 
 @pytest.mark.asyncio

@@ -263,6 +263,7 @@ Important:
 - replay harness + CI gates
 - directive persistence hardening and de-overfitting
 - ingestion bloat guardrails (`user`/`assistant` only for durable episodes)
+- retrieval planner skeleton + first reranker pass (route-aware episode reranking)
 
 ### Active Workstreams
 
@@ -272,8 +273,7 @@ Important:
 - setup diagnostics for missing Atlas prerequisites
 
 2. Retrieval intelligence
-- retrieval planner
-- reranker improvements
+- reranker improvements (second pass + evaluation tuning)
 - case memory design
 
 3. Trust operations
@@ -292,7 +292,11 @@ Important:
 - hardened Atlas provider runtime root discovery for integration/user-plugin locations (including `ATLAS_ROOT` override and `.venv` python fallback)
 - upstream-protection decision: reverted direct `hermes-agent` branch edits to avoid conflicts with upstream-linked branch workflow
 - schema decision: no DB schema migration required for this milestone; provider productization stays at integration/UX layer to remain retrieval-first and avoid niche schema churn
-- validation: atlas targeted suite `90 passed`; atlas full suite `178 passed, 10 skipped`
+- implemented retrieval planner skeleton in `memory.retrieval_planner` with semantic/lexical/temporal/analogous-case routing signals and per-route weights
+- integrated first reranker pass into enrichment episode selection using planner route weights (semantic + lexical overlap + temporal freshness blend)
+- added planner regression tests and enrichment retrieval-limit assertions (`tests/test_retrieval_planner.py`, `tests/test_enrichment.py`)
+- schema decision: retrieval planner/reranker milestone introduced no schema or migration changes (retrieval-layer only)
+- validation: targeted planner+enrichment suite `39 passed`; atlas full suite `182 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -359,7 +363,7 @@ Final Atlas is done when all are true:
 ## Immediate Next Actions
 
 1. [ ] finalize provider productization (`hermes memory setup` UX and docs) — pending upstream-safe landing path
-2. [ ] implement retrieval planner skeleton and first reranker pass
+2. [x] implement retrieval planner skeleton and first reranker pass
 3. [ ] define and migrate case-memory tables
 4. [ ] add long-horizon LLM eval suite (alongside deterministic replay)
 5. [ ] begin compatibility-view deprecation telemetry
