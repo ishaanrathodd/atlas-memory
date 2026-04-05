@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import re
 from uuid import uuid4
 
 import pytest
@@ -47,6 +48,15 @@ from memory.models import (
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _normalize_runtime_clock_block(value: str) -> str:
+    return re.sub(
+        r"Runtime clock:\n- UTC now: .*\n- Local now: .*",
+        "Runtime clock:\n- UTC now: <redacted>\n- Local now: <redacted>",
+        value,
+        flags=re.MULTILINE,
+    )
 
 
 class MockTransport:
@@ -1549,6 +1559,10 @@ async def test_enrich_context_formats_all_required_sections() -> None:
     bridge_context = await bridge.build_context_enrichment("Remind me about the launch deadline.")
 
     assert "Memory guidance:" in context
+    assert "Runtime clock:" in context
+    assert "UTC now:" in context
+    assert "Local now:" in context
+    assert "Honesty default policy:" in context
     assert "Relevant facts:" in context
     assert "Active life snapshot:" in context
     assert "Relevant prior conversations:" in context
@@ -1559,7 +1573,7 @@ async def test_enrich_context_formats_all_required_sections() -> None:
     assert "Likely active project: API launch deadline is Friday afternoon." in context
     assert "Discussing launch timing and deployment blockers." in context
     assert "Dominant emotions: anticipation, fear" in context
-    assert bridge_context == context
+    assert _normalize_runtime_clock_block(bridge_context) == _normalize_runtime_clock_block(context)
 
 
 @pytest.mark.asyncio
@@ -2245,6 +2259,7 @@ async def test_enrich_context_emits_trust_ledger_with_source_tags_and_freshness(
     assert "certainty=" in context
     assert "Trust operations:" in context
     assert "Trust mix:" in context
+    assert "Agreement gate: do not agree with unverified claims" in context
     assert "python -m memory.curator_runtime trust-ops" in context
     assert "Quote coverage checks:" in context
     assert "quote_status=no-quote-available" in context

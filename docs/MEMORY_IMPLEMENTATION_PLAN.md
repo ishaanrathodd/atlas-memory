@@ -38,15 +38,15 @@ The next moat is not adding niche fields. The moat is retrieval intelligence:
 - proactive intervention from historical analogues
 - optional graph layer for multi-hop reasoning after core retrieval quality is strong
 
-## Execution Mode: Solo But General
+## Execution Mode: Solo-First (Private)
 
-Atlas is developed for a single primary user, but quality targets remain general-purpose.
+Atlas is developed for a single primary user in a private workflow.
 
-- avoid user-specific hacks or hardcoded personal assumptions
-- prefer generic memory primitives and retrieval policies that transfer beyond one persona
-- use diverse/adversarial/synthetic evaluation to prevent overfitting to local usage patterns
-- keep operations lightweight: strong local CI/eval loops over enterprise rollout ceremony
-- no dashboards by design: memory upgrades must come from conversation evidence + automated replay evaluation, not manual dashboard curation
+- optimize for personal reliability first; no distribution or upstream PR obligations
+- avoid brittle one-off hacks even in solo mode so behavior stays maintainable
+- use diverse/adversarial/synthetic evaluation to prevent local-overfitting regressions
+- keep operations lightweight: strong local CI/eval loops over rollout ceremony
+- no dashboards by design: memory upgrades come from conversation evidence + automated replay evaluation
 
 
 ## Current Runtime State (Solo Build)
@@ -265,12 +265,11 @@ Important:
 
 ### Active Workstreams
 
-1. Post-closeout production rollout execution
-- apply migration sequence in target Supabase environment(s)
-- run post-migration verification SQL checks from `docs/FINAL_PRODUCT_RUNBOOK.md`
-- run one real-environment smoke cycle (`setup` + memory-enriched chat + trust-ops action + replay-eval)
+1. Temporal Graph Layer (Phase D, staged)
+- design and implement temporal graph memory for multi-hop reasoning over long timescales
+- keep graph adoption gated behind clear retrieval quality gains
 
-2. Optional quality expansion (not blocker for final-product closeout)
+2. Optional quality expansion (not blocker for current private deployment)
 - broader judge calibration tuning and sampled scenario mix
 - additional adversarial temporal/proactive replay coverage beyond current strict gates
 
@@ -526,11 +525,9 @@ Final Atlas is done when all are true:
 
 Remaining blockers (2026-04-06):
 
-- no code blockers in this workspace; test and closeout gates are green
-- remaining operational work is environment rollout execution:
-  - run migration apply order on target DB
-  - run verification SQL checks
-  - run one production-like smoke cycle using `docs/FINAL_PRODUCT_RUNBOOK.md`
+- no blockers for current private deployment; test and closeout gates are green
+- for "all roadmap phases complete": Phase D (Temporal Graph Layer) remains the only substantive feature addition
+- optional but non-blocking: broader judge calibration + extra adversarial scenario coverage
 
 
 ## Next Chat Continuation Protocol
