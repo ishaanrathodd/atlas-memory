@@ -33,6 +33,10 @@ jobs:
         run: |
           PYTHONPATH=src python -m pytest tests -q --ignore=tests/test_e2e.py
 
+      - name: Run synthetic fabricated-months replay benchmark
+        run: |
+          PYTHONPATH=src python -m pytest tests/test_eval_harness_synthetic.py -q
+
       - name: Run replay eval regression gate
         run: |
           PYTHONPATH=src python - <<'PY'

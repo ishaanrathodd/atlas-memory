@@ -16,7 +16,7 @@ It answers:
 ## Last Updated
 
 - Date: `2026-04-05`
-- Repository status: `green` (`198 passed, 10 skipped`)
+- Repository status: `green` (`199 passed, 10 skipped`)
 
 
 ## Executive Summary
@@ -347,6 +347,12 @@ Important:
   - each replay CI gate now fails on universal scorecard regressions (`overall_score.all_metrics_green=false`) in addition to existing pass-rate/slot gates
   - schema decision: no schema changes required; this is report-layer scoring and CI enforcement only
 - validation: replay harness tests `6 passed`; atlas full suite `198 passed, 10 skipped`
+- added fabricated-data synthetic long-horizon benchmark for real-world continuity confidence:
+  - new test `tests/test_eval_harness_synthetic.py` fabricates 6 months of usage by cloning and time-shifting all replay suites (baseline + identity + edge + adversarial + long-horizon)
+  - synthetic benchmark enforces strict thresholds over 200+ generated scenarios and requires universal scorecard health (`all_metrics_green=true`)
+  - CI now runs this benchmark explicitly via `pytest tests/test_eval_harness_synthetic.py -q`
+  - schema decision: no schema changes required; benchmark is test/runtime-eval only
+- validation: replay harness tests `7 passed`; atlas full suite `199 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
