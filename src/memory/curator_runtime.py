@@ -27,6 +27,7 @@ from memory.consolidation import (
     refresh_memory_cases,
     refresh_patterns,
     refresh_reflections,
+    refresh_temporal_graph,
     refresh_timeline_events,
 )
 from memory.emotions import EmotionAnalyzer
@@ -272,6 +273,11 @@ async def process_memory(
         min_message_count=min_message_count,
         agent_namespace=agent_namespace,
     )
+    temporal_graph = await refresh_temporal_graph(
+        client,
+        lookback_days=3650,
+        agent_namespace=agent_namespace,
+    )
     stats = await collect_stats(client)
 
     return {
@@ -300,6 +306,10 @@ async def process_memory(
         "pattern_count": int(patterns.get("pattern_count") or 0),
         "reflections_updated": int(reflections.get("reflections_upserted") or 0),
         "reflection_count": int(reflections.get("reflection_count") or 0),
+        "temporal_graph_nodes_updated": int(temporal_graph.get("temporal_graph_nodes_upserted") or 0),
+        "temporal_graph_edges_updated": int(temporal_graph.get("temporal_graph_edges_upserted") or 0),
+        "temporal_graph_node_count": int(temporal_graph.get("temporal_graph_node_count") or 0),
+        "temporal_graph_edge_count": int(temporal_graph.get("temporal_graph_edge_count") or 0),
         "errors": int(fact_pipeline.get("errors") or 0),
         "error_details": list(fact_pipeline.get("error_details") or []),
         "stats": stats,

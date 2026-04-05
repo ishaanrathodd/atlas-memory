@@ -233,21 +233,17 @@ Deliverables:
 - intervention safety thresholds
 - intervention replay evals
 
-### Phase D: Temporal Graph Layer (Staged)
+### Phase D: Temporal Graph Layer
 
-- add graph memory only after phases A-C are strong
-- support multi-hop relation traversal over long timescales
-- use graph for hard connect-the-dots tasks
+- implemented after phases A-C stabilized
+- supports multi-hop relation traversal over long timescales
+- used for hard connect-the-dots tasks in enrichment/retrieval
 
-Graph can be implemented with:
+Implemented with:
 
-- native temporal graph tables in Postgres
-- optional orchestration via graph tooling (including GraphRAG-style pipelines) when scale justifies it
-
-Important:
-
-- Graph/GraphRAG is an accelerator, not phase zero
-- first win is retrieval planner + case memory quality
+- native temporal graph tables in Postgres (`temporal_graph_nodes`, `temporal_graph_edges`)
+- curation pass compiling graph nodes/edges from outcomes, patterns, cases, and reflections
+- retrieval planner `temporal_graph` route + enrichment path surfacing (`Temporal graph trails`)
 
 
 ## Workstream Plan and Status
@@ -262,14 +258,11 @@ Important:
 - ingestion bloat guardrails (`user`/`assistant` only for durable episodes)
 - retrieval planner skeleton + first reranker pass (route-aware episode reranking)
 - case-memory schema + first compile/read path (tables, curation write path, retrieval integration)
+- temporal graph layer (schema + curation + planner route + enrichment surfacing)
 
 ### Active Workstreams
 
-1. Temporal Graph Layer (Phase D, staged)
-- design and implement temporal graph memory for multi-hop reasoning over long timescales
-- keep graph adoption gated behind clear retrieval quality gains
-
-2. Optional quality expansion (not blocker for current private deployment)
+1. Optional quality expansion (not blocker for current private deployment)
 - broader judge calibration tuning and sampled scenario mix
 - additional adversarial temporal/proactive replay coverage beyond current strict gates
 
@@ -328,6 +321,12 @@ Status update (2026-04-05): trust-ops polish completed in retrieval output + eva
 - added adversarial continuity replay hardening focused on contradiction chains and temporal inversion:
   - new fixture: `tests/fixtures/replay_eval_identity_adversarial_scenarios.json` with `12` adversarial scenarios (temporal inversion, cross-session contradiction chains, mixed lifecycle slots, sparse guardrails)
   - replay eval regression tests now include baseline + edge-case + adversarial identity packs
+  - added `2026-04-06_temporal_graph_layer.sql` introducing additive graph tables (`memory.temporal_graph_nodes`, `memory.temporal_graph_edges`) and indexes
+  - introduced temporal graph models and transport APIs (`TemporalGraphNode`, `TemporalGraphEdge`, `TemporalGraphPath`) with Supabase and in-memory support
+  - implemented `refresh_temporal_graph` curation runtime to materialize graph nodes/edges from outcomes, patterns, memory cases, and reflections
+  - integrated temporal graph retrieval route into planner and surfaced graph evidence paths in enrichment context as `Temporal graph trails`
+  - integrated temporal graph refresh into both `process-memory` and warm live-curator flows
+  - validation: targeted temporal-graph test slice `68 passed`; atlas full suite `229 passed, 10 skipped`
   - CI now runs a dedicated adversarial replay gate with slot-level pass threshold enforcement (`1.0`)
 - validation: replay harness tests `5 passed`; atlas full suite `197 passed, 10 skipped`
 - added long-horizon continuity replay suite and CI gate:
@@ -522,11 +521,12 @@ Final Atlas is done when all are true:
 7. [x] complete canonical identity conflict-resolution lifecycle (confirm/supersede/revoke semantics)
 8. [x] add optional replay LLM-judge layer with CLI toggles (non-dashboard, enforce optional)
 9. [x] ship retrieval/trust hardening pass (second-pass rerank + certainty labels + proactive trigger confidence)
+10. [x] ship temporal graph layer end-to-end (schema + curation + retrieval + enrichment)
 
 Remaining blockers (2026-04-06):
 
 - no blockers for current private deployment; test and closeout gates are green
-- for "all roadmap phases complete": Phase D (Temporal Graph Layer) remains the only substantive feature addition
+- all roadmap phases (A-D) are now delivered for current private deployment scope
 - optional but non-blocking: broader judge calibration + extra adversarial scenario coverage
 
 

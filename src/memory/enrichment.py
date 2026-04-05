@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Sequence
 
-from memory.models import ActiveState, CaseOutcomeStatus, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, MemoryCase, Pattern, PatternType, Reflection, ReflectionStatus, Session, SessionHandoff, TimelineEvent
+from memory.models import ActiveState, CaseOutcomeStatus, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, MemoryCase, Pattern, PatternType, Reflection, ReflectionStatus, Session, SessionHandoff, TemporalGraphPath, TimelineEvent
 from memory.retrieval_planner import RetrievalSignals, build_retrieval_plan, rerank_items_first_pass, rerank_items_second_pass
 from memory.transport import (
     MemoryTransport,
@@ -28,6 +28,7 @@ MAX_PATTERNS_IN_CONTEXT = 4
 MAX_REFLECTIONS_IN_CONTEXT = 3
 MAX_COMMITMENTS_IN_CONTEXT = 4
 MAX_TIMELINE_EVENTS_IN_CONTEXT = 4
+MAX_TEMPORAL_GRAPH_PATHS = 4
 FACT_SEARCH_LIMIT = 100
 EPISODE_SEARCH_LIMIT = 12
 EPISODE_SEARCH_DAYS_BACK = 3650
@@ -302,6 +303,24 @@ def _query_targets_timeline(value: str) -> bool:
         "earlier this week",
         "what was i doing",
         "what were we doing",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _query_targets_graph_reasoning(value: str) -> bool:
+    lowered = (value or "").lower()
+    markers = (
+        "connect the dots",
+        "connect-the-dots",
+        "how does",
+        "relation between",
+        "related to",
+        "how is",
+        "why does this keep",
+        "causal chain",
+        "root cause chain",
+        "multi-hop",
+        "link between",
     )
     return any(marker in lowered for marker in markers)
 
@@ -865,6 +884,7 @@ class EnrichmentPayload:
     corrections: list[Correction]
     timeline_events: list[TimelineEvent]
     memory_cases: list[MemoryCase]
+    temporal_graph_paths: list[TemporalGraphPath]
     decision_outcomes: list[DecisionOutcome]
     patterns: list[Pattern]
     reflections: list[Reflection]
@@ -910,6 +930,7 @@ class EnrichmentPayload:
             _format_commitments(self.commitments),
             _format_timeline_events(self.timeline_events),
             _format_memory_cases(self.memory_cases),
+            _format_temporal_graph_paths(self.temporal_graph_paths),
             _format_decision_outcomes(self.decision_outcomes),
             _format_patterns(self.patterns),
             _format_reflections(self.reflections),
@@ -1062,6 +1083,20 @@ def _format_memory_cases(cases: list[MemoryCase]) -> str:
             f"- [{case.outcome_status.value}] {title} -> {resolution}"
         )
     return "Analogous past cases:\n" + "\n".join(lines)
+
+
+def _format_temporal_graph_paths(paths: list[TemporalGraphPath]) -> str:
+    if not paths:
+        return ""
+
+    lines = []
+    for path in paths:
+        lines.append(
+            "- "
+            f"[hops={path.hop_count}, confidence={path.confidence:.2f}, evidence={path.evidence_score:.2f}] "
+            f"{_normalize_text(path.path_text, max_length=300)}"
+        )
+    return "Temporal graph trails:\n" + "\n".join(lines)
 
 
 def _format_decision_outcomes(outcomes: list[DecisionOutcome]) -> str:
@@ -1664,6 +1699,7 @@ def _build_trust_ledger_lines(
     decision_outcomes: list[DecisionOutcome],
     patterns: list[Pattern],
     reflections: list[Reflection],
+    temporal_graph_paths: list[TemporalGraphPath],
     relevant_episodes: list[Episode],
 ) -> list[str]:
     lines: list[str] = []
@@ -1701,6 +1737,12 @@ def _build_trust_ledger_lines(
         freshness = _freshness_label(reflection.last_observed_at)
         lines.append(
             f"[source:reflection] status={reflection.status.value} confidence={float(reflection.confidence):.2f} certainty={_certainty_label(confidence=float(reflection.confidence), freshness=freshness)} last_observed={reflection.last_observed_at.isoformat()} freshness={freshness} state={_currentness_label(reflection.last_observed_at, current_hours=24 * 30)} wording=derived"
+        )
+
+    for path in temporal_graph_paths[:1]:
+        freshness = _freshness_label(path.last_observed_at)
+        lines.append(
+            f"[source:temporal_graph] hops={path.hop_count} confidence={float(path.confidence):.2f} certainty={_certainty_label(confidence=float(path.confidence), freshness=freshness)} last_observed={path.last_observed_at.isoformat() if path.last_observed_at else 'unknown'} freshness={freshness} state={_currentness_label(path.last_observed_at, current_hours=24 * 30)} wording=derived"
         )
 
     deduped: list[str] = []
@@ -2262,6 +2304,21 @@ def _memory_case_confidence_signal(case: MemoryCase) -> float:
     return min(1.0, (float(case.confidence) * 0.55) + (float(case.impact_score) * 0.45))
 
 
+def _temporal_graph_path_overlap(path: TemporalGraphPath, query_tokens: set[str]) -> int:
+    path_tokens = _tokenize(
+        " ".join(
+            [
+                path.path_text,
+                path.start_node_key,
+                path.end_node_key,
+                " ".join(path.supporting_node_keys),
+                " ".join(path.tags),
+            ]
+        )
+    )
+    return _token_overlap_count(query_tokens, path_tokens)
+
+
 def _proactive_confidence_label(score: float) -> str:
     if score >= 0.85:
         return "high"
@@ -2391,6 +2448,7 @@ def _build_retrieval_evidence_lines(
     facts: list[Fact],
     timeline_events: list[TimelineEvent],
     memory_cases: list[MemoryCase],
+    temporal_graph_paths: list[TemporalGraphPath],
     decision_outcomes: list[DecisionOutcome],
     patterns: list[Pattern],
     reflections: list[Reflection],
@@ -2405,6 +2463,7 @@ def _build_retrieval_evidence_lines(
         f"facts={len(facts)}",
         f"timeline={len(timeline_events)}",
         f"cases={len(memory_cases)}",
+        f"graph_paths={len(temporal_graph_paths)}",
         f"outcomes={len(decision_outcomes)}",
         f"patterns={len(patterns)}",
         f"reflections={len(reflections)}",
@@ -2417,6 +2476,7 @@ def _build_retrieval_evidence_lines(
         [episode.message_timestamp for episode in relevant_episodes]
         + [fact.updated_at or fact.created_at for fact in facts]
         + [event.event_time for event in timeline_events]
+        + [path.last_observed_at for path in temporal_graph_paths]
         + [outcome.event_time for outcome in decision_outcomes]
         + [pattern.last_observed_at for pattern in patterns]
         + [reflection.last_observed_at for reflection in reflections]
@@ -2673,6 +2733,7 @@ async def collect_enrichment_payload(
     patterns_query = _query_targets_patterns(user_message)
     reflections_query = _query_targets_reflections(user_message)
     timeline_query = _query_targets_timeline(user_message) or requested_iso_week is not None
+    graph_reasoning_query = _query_targets_graph_reasoning(user_message)
     commitments_query = _query_targets_commitments(user_message) or advice_query
     proactive_coaching_query = _query_needs_proactive_coaching(user_message)
 
@@ -2684,6 +2745,7 @@ async def collect_enrichment_payload(
             patterns_query=patterns_query,
             reflections_query=reflections_query,
             continuity_query=continuity_query,
+            graph_query=graph_reasoning_query,
         ),
         default_relevant_episode_limit=EPISODE_SEARCH_LIMIT,
         default_recent_episode_limit=MAX_RECENT_EPISODES,
@@ -2718,6 +2780,16 @@ async def collect_enrichment_payload(
         agent_namespace=agent_namespace,
         statuses=[ReflectionStatus.SUPPORTED.value, ReflectionStatus.TENTATIVE.value],
     )
+    search_temporal_graph_paths = getattr(transport, "search_temporal_graph_paths", None)
+    if callable(search_temporal_graph_paths) and retrieval_plan.route_weight("temporal_graph", default=0.0) > 0.0:
+        temporal_graph_paths_task = search_temporal_graph_paths(
+            query=user_message,
+            limit=max(MAX_TEMPORAL_GRAPH_PATHS, retrieval_plan.graph_path_limit),
+            max_hops=retrieval_plan.graph_hop_limit,
+            agent_namespace=agent_namespace,
+        )
+    else:
+        temporal_graph_paths_task = asyncio.sleep(0, result=[])
     active_state_task = transport.list_active_state(limit=5, agent_namespace=agent_namespace, statuses=["active", "cooling"])
     session_handoffs_task = transport.list_session_handoffs(
         limit=3,
@@ -2739,7 +2811,7 @@ async def collect_enrichment_payload(
     )
 
     if session_task is None:
-        facts, directives, commitments, corrections, timeline_events, decision_outcomes, memory_cases, patterns, reflections, active_state_records, session_handoffs, relevant_episodes, recent_episodes = await asyncio.gather(
+        facts, directives, commitments, corrections, timeline_events, decision_outcomes, memory_cases, patterns, reflections, temporal_graph_paths, active_state_records, session_handoffs, relevant_episodes, recent_episodes = await asyncio.gather(
             facts_task,
             directives_task,
             commitments_task,
@@ -2749,6 +2821,7 @@ async def collect_enrichment_payload(
             memory_cases_task,
             patterns_task,
             reflections_task,
+            temporal_graph_paths_task,
             active_state_task,
             session_handoffs_task,
             relevant_episodes_task,
@@ -2756,7 +2829,7 @@ async def collect_enrichment_payload(
         )
         active_session = None
     else:
-        facts, directives, commitments, corrections, timeline_events, decision_outcomes, memory_cases, patterns, reflections, active_state_records, session_handoffs, relevant_episodes, recent_episodes, active_session = await asyncio.gather(
+        facts, directives, commitments, corrections, timeline_events, decision_outcomes, memory_cases, patterns, reflections, temporal_graph_paths, active_state_records, session_handoffs, relevant_episodes, recent_episodes, active_session = await asyncio.gather(
             facts_task,
             directives_task,
             commitments_task,
@@ -2766,6 +2839,7 @@ async def collect_enrichment_payload(
             memory_cases_task,
             patterns_task,
             reflections_task,
+            temporal_graph_paths_task,
             active_state_task,
             session_handoffs_task,
             relevant_episodes_task,
@@ -3007,6 +3081,36 @@ async def collect_enrichment_payload(
     else:
         filtered_memory_cases = []
 
+    ranked_temporal_graph_paths = sorted(
+        [
+            path
+            for path in temporal_graph_paths
+            if not _looks_like_reference_content(path.path_text)
+            if not _looks_like_operational_content(path.path_text)
+        ],
+        key=lambda path: (
+            _temporal_graph_path_overlap(path, query_tokens),
+            float(path.confidence),
+            float(path.evidence_score),
+            -int(path.hop_count),
+            _sort_datetime(path.last_observed_at),
+        ),
+        reverse=True,
+    )
+
+    if low_signal_query:
+        filtered_temporal_graph_paths = []
+    elif retrieval_plan.route_weight("temporal_graph", default=0.0) <= 0.0:
+        filtered_temporal_graph_paths = []
+    elif graph_reasoning_query or advice_query or patterns_query or reflections_query:
+        filtered_temporal_graph_paths = ranked_temporal_graph_paths[: max(1, min(MAX_TEMPORAL_GRAPH_PATHS, retrieval_plan.graph_path_limit or MAX_TEMPORAL_GRAPH_PATHS))]
+    else:
+        filtered_temporal_graph_paths = [
+            path
+            for path in ranked_temporal_graph_paths
+            if _temporal_graph_path_overlap(path, query_tokens) > 0
+        ][:MAX_TEMPORAL_GRAPH_PATHS]
+
     case_outcome_ids = {
         str(outcome_id)
         for case in filtered_memory_cases
@@ -3150,6 +3254,7 @@ async def collect_enrichment_payload(
         ranked_facts = []
         filtered_timeline_events = []
         filtered_memory_cases = []
+        filtered_temporal_graph_paths = []
         filtered_decision_outcomes = []
         filtered_patterns = []
         filtered_reflections = []
@@ -3200,6 +3305,7 @@ async def collect_enrichment_payload(
         facts=ranked_facts,
         timeline_events=filtered_timeline_events,
         memory_cases=filtered_memory_cases,
+        temporal_graph_paths=filtered_temporal_graph_paths,
         decision_outcomes=filtered_decision_outcomes,
         patterns=filtered_patterns,
         reflections=filtered_reflections,
@@ -3214,6 +3320,7 @@ async def collect_enrichment_payload(
         decision_outcomes=filtered_decision_outcomes,
         patterns=filtered_patterns,
         reflections=filtered_reflections,
+        temporal_graph_paths=filtered_temporal_graph_paths,
         relevant_episodes=ranked_relevant_episodes,
     )
     verbatim_evidence_lines = _build_verbatim_evidence_lines(
@@ -3246,6 +3353,7 @@ async def collect_enrichment_payload(
         corrections=corrections,
         timeline_events=filtered_timeline_events,
         memory_cases=filtered_memory_cases,
+        temporal_graph_paths=filtered_temporal_graph_paths,
         decision_outcomes=filtered_decision_outcomes,
         patterns=filtered_patterns,
         reflections=filtered_reflections,

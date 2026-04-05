@@ -949,6 +949,7 @@ class MemoryClient:
                 refresh_memory_cases,
                 refresh_patterns,
                 refresh_reflections,
+                refresh_temporal_graph,
                 refresh_timeline_events,
             )
             summary_generation_enabled = str(os.getenv("MEMORY_ENABLE_SESSION_SUMMARIES", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -1069,6 +1070,16 @@ class MemoryClient:
                         except Exception as exc:
                             logger.warning("Warm live curator failed to refresh reflections: %s", exc)
                             result["reflections_error"] = str(exc)
+                        try:
+                            temporal_graph_result = await refresh_temporal_graph(
+                                self,
+                                lookback_days=3650,
+                                agent_namespace=agent_namespace,
+                            )
+                            result["temporal_graph"] = temporal_graph_result
+                        except Exception as exc:
+                            logger.warning("Warm live curator failed to refresh temporal_graph: %s", exc)
+                            result["temporal_graph_error"] = str(exc)
 
                         result["warm_ran"] = True
                         model_config["atlas_warm_curator_at"] = now.isoformat()

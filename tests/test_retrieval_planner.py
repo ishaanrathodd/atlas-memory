@@ -78,6 +78,22 @@ def test_build_retrieval_plan_continuity_query_expands_recent_window() -> None:
     assert plan.route_weight("temporal") >= 0.9
 
 
+def test_build_retrieval_plan_graph_query_enables_temporal_graph_route() -> None:
+    plan = build_retrieval_plan(
+        signals=RetrievalSignals(graph_query=True),
+        default_relevant_episode_limit=12,
+        default_recent_episode_limit=3,
+        default_timeline_fetch_limit=12,
+        exact_relevant_episode_limit=24,
+        exact_recent_episode_limit=24,
+    )
+
+    assert plan.route_weight("temporal_graph") > 0.0
+    assert plan.graph_path_limit == 6
+    assert plan.graph_hop_limit == 3
+    assert plan.route_weight("temporal") >= 0.9
+
+
 @dataclass(frozen=True)
 class _EpisodeCandidate:
     text: str

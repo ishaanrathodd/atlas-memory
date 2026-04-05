@@ -25,12 +25,13 @@ from memory.consolidation import (
     refresh_memory_cases,
     refresh_patterns,
     refresh_reflections,
+    refresh_temporal_graph,
     refresh_timeline_events,
 )
 from memory.embedding import MockEmbeddingProvider
 from memory.emotions import EmotionAnalyzer
 from memory.instance_identity import get_agent_namespace
-from memory.models import ActiveState, Commitment, CommitmentStatus, Correction, CorrectionKind, DecisionOutcome, DecisionOutcomeKind, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, FactHistory, MemoryCase, Pattern, PatternType, Platform, Reflection, Session, TimelineEvent, TimelineEventKind
+from memory.models import ActiveState, Commitment, CommitmentStatus, Correction, CorrectionKind, DecisionOutcome, DecisionOutcomeKind, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, FactHistory, MemoryCase, Pattern, PatternType, Platform, Reflection, Session, TemporalGraphEdge, TemporalGraphNode, TimelineEvent, TimelineEventKind
 
 
 def _utcnow() -> datetime:
@@ -51,6 +52,8 @@ class CuratorRuntimeTransport:
         self.decision_outcomes: list[DecisionOutcome] = []
         self.patterns: list[Pattern] = []
         self.reflections: list[Reflection] = []
+        self.temporal_graph_nodes: list[TemporalGraphNode] = []
+        self.temporal_graph_edges: list[TemporalGraphEdge] = []
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
         self.healthy = True
@@ -396,6 +399,100 @@ class CuratorRuntimeTransport:
         links.sort(key=lambda link: float(link.get("relevance_score") or 0.0), reverse=True)
         return links[:limit]
 
+    async def upsert_temporal_graph_node(self, node: TemporalGraphNode) -> TemporalGraphNode:
+        self.temporal_graph_nodes = [existing for existing in self.temporal_graph_nodes if existing.node_key != node.node_key]
+        if node.id is None:
+            node = node.model_copy(update={"id": uuid4()})
+        self.temporal_graph_nodes.append(node)
+        return node
+
+    async def list_temporal_graph_nodes(
+        self,
+        limit: int = 50,
+        agent_namespace: str | None = None,
+        node_types: list[str] | None = None,
+    ) -> list[TemporalGraphNode]:
+        nodes = list(self.temporal_graph_nodes)
+        if agent_namespace is not None:
+            nodes = [
+                node
+                for node in nodes
+                if node.agent_namespace == agent_namespace or (agent_namespace == "main" and node.agent_namespace is None)
+            ]
+        if node_types:
+            allowed = set(node_types)
+            nodes = [node for node in nodes if node.node_type in allowed]
+        nodes.sort(key=lambda node: (node.importance_score, node.last_observed_at), reverse=True)
+        return nodes[:limit]
+
+    async def delete_temporal_graph_node(
+        self,
+        node_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        before = len(self.temporal_graph_nodes)
+
+        def _matches(namespace: str | None) -> bool:
+            return namespace == agent_namespace or (agent_namespace == "main" and namespace is None)
+
+        self.temporal_graph_nodes = [
+            node
+            for node in self.temporal_graph_nodes
+            if not (
+                node.node_key == node_key
+                and _matches(getattr(node, "agent_namespace", None))
+            )
+        ]
+        return len(self.temporal_graph_nodes) != before
+
+    async def upsert_temporal_graph_edge(self, edge: TemporalGraphEdge) -> TemporalGraphEdge:
+        self.temporal_graph_edges = [existing for existing in self.temporal_graph_edges if existing.edge_key != edge.edge_key]
+        if edge.id is None:
+            edge = edge.model_copy(update={"id": uuid4()})
+        self.temporal_graph_edges.append(edge)
+        return edge
+
+    async def list_temporal_graph_edges(
+        self,
+        limit: int = 200,
+        agent_namespace: str | None = None,
+        relation_types: list[str] | None = None,
+    ) -> list[TemporalGraphEdge]:
+        edges = list(self.temporal_graph_edges)
+        if agent_namespace is not None:
+            edges = [
+                edge
+                for edge in edges
+                if edge.agent_namespace == agent_namespace or (agent_namespace == "main" and edge.agent_namespace is None)
+            ]
+        if relation_types:
+            allowed = set(relation_types)
+            edges = [edge for edge in edges if edge.relation in allowed]
+        edges.sort(key=lambda edge: (edge.weight, edge.last_observed_at), reverse=True)
+        return edges[:limit]
+
+    async def delete_temporal_graph_edge(
+        self,
+        edge_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        before = len(self.temporal_graph_edges)
+
+        def _matches(namespace: str | None) -> bool:
+            return namespace == agent_namespace or (agent_namespace == "main" and namespace is None)
+
+        self.temporal_graph_edges = [
+            edge
+            for edge in self.temporal_graph_edges
+            if not (
+                edge.edge_key == edge_key
+                and _matches(getattr(edge, "agent_namespace", None))
+            )
+        ]
+        return len(self.temporal_graph_edges) != before
+
     async def upsert_reflection(self, reflection: Reflection) -> Reflection:
         self.reflections = [existing for existing in self.reflections if existing.reflection_key != reflection.reflection_key]
         if reflection.id is None:
@@ -524,6 +621,10 @@ class CuratorRuntimeTransport:
             return len(self.decision_outcomes)
         if table == "patterns":
             return len(self.patterns)
+        if table == "temporal_graph_nodes":
+            return len(self.temporal_graph_nodes)
+        if table == "temporal_graph_edges":
+            return len(self.temporal_graph_edges)
         if table == "commitments":
             return len(self.commitments)
         if table == "corrections":
@@ -1588,6 +1689,95 @@ async def test_refresh_memory_cases_materializes_cases_from_outcomes_and_pattern
     assert stored_case.source_outcome_ids == [outcome.id]
     assert "case-memory" in stored_case.tags
     assert len(transport.case_evidence_links) >= 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_temporal_graph_materializes_multi_hop_nodes_and_edges() -> None:
+    transport = CuratorRuntimeTransport()
+    client = _make_client(transport)
+    now = _utcnow()
+
+    outcome = DecisionOutcome(
+        id=uuid4(),
+        agent_namespace="main",
+        kind=DecisionOutcomeKind.WORKFLOW,
+        title="checkout migration failure",
+        decision="Rushed checkout migration rollout without verification gates.",
+        outcome="Production regressions and rework consumed two days.",
+        lesson="Ship with replay eval and canary checks first.",
+        outcome_key="auto:decision-outcome:checkout-failure",
+        status=DecisionOutcomeStatus.FAILURE,
+        confidence=0.93,
+        importance_score=0.91,
+        event_time=now - timedelta(days=10),
+        tags=["checkout", "migration", "rollout", "verification"],
+    )
+    pattern = Pattern(
+        id=uuid4(),
+        agent_namespace="main",
+        pattern_type=PatternType.TRAP,
+        statement="Rollout speed tends to outrun verification depth.",
+        description="Repeated failure mode under delivery pressure.",
+        pattern_key="auto:pattern:verification-trap",
+        confidence=0.89,
+        frequency_score=0.84,
+        impact_score=0.9,
+        first_observed_at=now - timedelta(days=70),
+        last_observed_at=now - timedelta(days=2),
+        tags=["checkout", "verification", "rollout"],
+    )
+    case = MemoryCase(
+        id=uuid4(),
+        agent_namespace="main",
+        case_key="auto:case:checkout-rollout",
+        title="Checkout rollout without safety gates",
+        problem_statement="Checkout migration rollout moved too fast without verification gates.",
+        resolution_summary="Replay eval and canary rollout prevented repeat regressions.",
+        outcome_status="failure",
+        confidence=0.88,
+        impact_score=0.9,
+        first_observed_at=now - timedelta(days=60),
+        last_observed_at=now - timedelta(days=5),
+        source_outcome_ids=[outcome.id],
+        source_pattern_ids=[pattern.id],
+        source_episode_ids=[uuid4()],
+        tags=["checkout", "migration", "rollout", "verification"],
+        created_at=now - timedelta(days=5),
+        updated_at=now - timedelta(days=5),
+    )
+    reflection = Reflection(
+        id=uuid4(),
+        agent_namespace="main",
+        kind="workflow_hypothesis",
+        statement="Deadline pressure weakens verification depth.",
+        evidence_summary="Checkout regressions followed rollout speed over verification.",
+        reflection_key="auto:reflection:checkout-rollout",
+        status="supported",
+        confidence=0.82,
+        first_observed_at=now - timedelta(days=7),
+        last_observed_at=now - timedelta(days=2),
+        supporting_episode_ids=[],
+        supporting_session_ids=[],
+        tags=["rollout", "verification", "derived"],
+    )
+
+    transport.decision_outcomes = [outcome]
+    transport.patterns = [pattern]
+    transport.memory_cases = [case]
+    transport.reflections = [reflection]
+
+    stats = await refresh_temporal_graph(client, now=now, agent_namespace="main")
+
+    assert stats["temporal_graph_nodes_upserted"] >= 4
+    assert stats["temporal_graph_edges_upserted"] >= 3
+    assert stats["temporal_graph_node_count"] >= 4
+    assert stats["temporal_graph_edge_count"] >= 3
+
+    node_types = {node.node_type for node in transport.temporal_graph_nodes}
+    assert {"case", "outcome", "pattern", "reflection"}.issubset(node_types)
+    relations = {edge.relation for edge in transport.temporal_graph_edges}
+    assert "supported_by_outcome" in relations
+    assert "supported_by_pattern" in relations
 
 
 @pytest.mark.asyncio
@@ -2735,6 +2925,14 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     async def fake_refresh_reflections(*args, **kwargs) -> dict[str, object]:
         return {"reflections_upserted": 2, "reflection_count": 4}
 
+    async def fake_refresh_temporal_graph(*args, **kwargs) -> dict[str, object]:
+        return {
+            "temporal_graph_nodes_upserted": 5,
+            "temporal_graph_edges_upserted": 7,
+            "temporal_graph_node_count": 8,
+            "temporal_graph_edge_count": 11,
+        }
+
     async def fake_refresh_commitments(*args, **kwargs) -> dict[str, object]:
         return {"commitments_upserted": 2, "commitment_count": 3}
 
@@ -2752,6 +2950,7 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     monkeypatch.setattr(runtime, "refresh_memory_cases", fake_refresh_memory_cases)
     monkeypatch.setattr(runtime, "refresh_patterns", fake_refresh_patterns)
     monkeypatch.setattr(runtime, "refresh_reflections", fake_refresh_reflections)
+    monkeypatch.setattr(runtime, "refresh_temporal_graph", fake_refresh_temporal_graph)
 
     result = await runtime.run_task("process-memory", client=client)
 
@@ -2779,6 +2978,10 @@ async def test_process_memory_wraps_consolidation_and_stats(monkeypatch: pytest.
     assert result["pattern_count"] == 5
     assert result["reflections_updated"] == 2
     assert result["reflection_count"] == 4
+    assert result["temporal_graph_nodes_updated"] == 5
+    assert result["temporal_graph_edges_updated"] == 7
+    assert result["temporal_graph_node_count"] == 8
+    assert result["temporal_graph_edge_count"] == 11
     assert result["stats"] == {"session_count": 10, "episode_count": 20, "fact_count": 30}
 
 

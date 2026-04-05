@@ -39,6 +39,9 @@ from memory.models import (
     Reflection,
     SessionHandoff,
     Session,
+    TemporalGraphEdge,
+    TemporalGraphNode,
+    TemporalGraphPath,
     TimelineEvent,
     VECTOR_DIMENSIONS,
 )
@@ -166,6 +169,19 @@ def _query_term_variants(value: str) -> set[str]:
         if token.endswith("s") and len(token) > 3:
             variants.add(token[:-1])
     return {variant for variant in variants if len(variant) > 1}
+
+
+def _temporal_graph_tokens(*parts: str) -> set[str]:
+    tokens: set[str] = set()
+    for part in parts:
+        tokens.update(_query_term_variants(part))
+    return tokens
+
+
+def _temporal_graph_overlap(query_tokens: set[str], candidate_tokens: set[str]) -> int:
+    if not query_tokens or not candidate_tokens:
+        return 0
+    return len(query_tokens.intersection(candidate_tokens))
 
 
 def _lexical_search_patterns(query: str) -> list[str]:
@@ -605,6 +621,46 @@ class MemoryTransport(Protocol):
         limit: int = 50,
         agent_namespace: str | None = None,
     ) -> list[CaseEvidenceLink]: ...
+
+    async def upsert_temporal_graph_node(self, node: TemporalGraphNode) -> TemporalGraphNode: ...
+
+    async def list_temporal_graph_nodes(
+        self,
+        limit: int = 50,
+        agent_namespace: str | None = None,
+        node_types: list[str] | None = None,
+    ) -> list[TemporalGraphNode]: ...
+
+    async def delete_temporal_graph_node(
+        self,
+        node_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool: ...
+
+    async def upsert_temporal_graph_edge(self, edge: TemporalGraphEdge) -> TemporalGraphEdge: ...
+
+    async def list_temporal_graph_edges(
+        self,
+        limit: int = 200,
+        agent_namespace: str | None = None,
+        relation_types: list[str] | None = None,
+    ) -> list[TemporalGraphEdge]: ...
+
+    async def delete_temporal_graph_edge(
+        self,
+        edge_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool: ...
+
+    async def search_temporal_graph_paths(
+        self,
+        query: str,
+        limit: int = 6,
+        max_hops: int = 3,
+        agent_namespace: str | None = None,
+    ) -> list[TemporalGraphPath]: ...
 
     async def upsert_reflection(self, reflection: Reflection) -> Reflection: ...
 
@@ -1876,6 +1932,344 @@ class SupabaseTransport:
         links = _filter_records_by_agent_namespace(links, agent_namespace)
         return links[:limit]
 
+    async def upsert_temporal_graph_node(self, node: TemporalGraphNode) -> TemporalGraphNode:
+        payload = _ensure_payload_agent_namespace(_serialize_value(node.model_dump(exclude_none=True)))
+        node_key = str(payload.get("node_key") or "").strip()
+        if not node_key:
+            raise ValueError("TemporalGraphNode.node_key is required.")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("temporal_graph_nodes")
+                .select("*")
+                .eq("node_key", node_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "temporal_graph_nodes"):
+                logger.info("Memory temporal_graph_nodes table is not available yet; skipping graph-node upsert.")
+                return node
+            raise
+
+        existing = _first_response_record(response)
+        if existing is not None:
+            payload.setdefault("updated_at", _now_utc().isoformat())
+            response, _ = await self._update_payload(
+                "temporal_graph_nodes",
+                str(existing["id"]),
+                payload,
+                operation="upsert_temporal_graph_node",
+            )
+            if response is None:
+                refreshed = await self._fetch_row("temporal_graph_nodes", str(existing["id"]))
+                if refreshed is None:
+                    raise LookupError("upsert_temporal_graph_node returned no rows.")
+                return TemporalGraphNode.model_validate(_normalize_record(refreshed))
+            return TemporalGraphNode.model_validate(
+                _normalize_record(self._require_record(response, operation="upsert_temporal_graph_node"))
+            )
+
+        response, _ = await self._insert_payload("temporal_graph_nodes", payload, operation="insert_temporal_graph_node")
+        return TemporalGraphNode.model_validate(
+            _normalize_record(self._require_record(response, operation="insert_temporal_graph_node"))
+        )
+
+    async def list_temporal_graph_nodes(
+        self,
+        limit: int = 50,
+        agent_namespace: str | None = None,
+        node_types: list[str] | None = None,
+    ) -> list[TemporalGraphNode]:
+        requested_types = [str(value).strip() for value in (node_types or []) if str(value).strip()]
+
+        def _query() -> Any:
+            query = self._schema_client().table("temporal_graph_nodes").select("*")
+            if requested_types:
+                query = query.in_("node_type", requested_types)
+            query = query.order("importance_score", desc=True).order("last_observed_at", desc=True).limit(max(limit * 4, 50))
+            return query.execute()
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "temporal_graph_nodes"):
+                logger.info("Memory temporal_graph_nodes table is not available yet; returning an empty graph-node list.")
+                return []
+            raise
+
+        nodes = [TemporalGraphNode.model_validate(_normalize_record(item)) for item in _response_rows(response)]
+        nodes = _filter_records_by_agent_namespace(nodes, agent_namespace)
+        return nodes[:limit]
+
+    async def delete_temporal_graph_node(
+        self,
+        node_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        normalized_key = str(node_key or "").strip()
+        if not normalized_key:
+            return False
+
+        def _delete() -> Any:
+            return (
+                self._schema_client()
+                .table("temporal_graph_nodes")
+                .delete()
+                .eq("node_key", normalized_key)
+                .eq("agent_namespace", _resolved_agent_namespace(agent_namespace))
+                .execute()
+            )
+
+        try:
+            await self._run(_delete)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "temporal_graph_nodes"):
+                logger.info("Memory temporal_graph_nodes table is not available yet; skipping graph-node delete.")
+                return False
+            raise
+        return True
+
+    async def upsert_temporal_graph_edge(self, edge: TemporalGraphEdge) -> TemporalGraphEdge:
+        payload = _ensure_payload_agent_namespace(_serialize_value(edge.model_dump(exclude_none=True)))
+        edge_key = str(payload.get("edge_key") or "").strip()
+        if not edge_key:
+            raise ValueError("TemporalGraphEdge.edge_key is required.")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("temporal_graph_edges")
+                .select("*")
+                .eq("edge_key", edge_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "temporal_graph_edges"):
+                logger.info("Memory temporal_graph_edges table is not available yet; skipping graph-edge upsert.")
+                return edge
+            raise
+
+        existing = _first_response_record(response)
+        if existing is not None:
+            payload.setdefault("updated_at", _now_utc().isoformat())
+            response, _ = await self._update_payload(
+                "temporal_graph_edges",
+                str(existing["id"]),
+                payload,
+                operation="upsert_temporal_graph_edge",
+            )
+            if response is None:
+                refreshed = await self._fetch_row("temporal_graph_edges", str(existing["id"]))
+                if refreshed is None:
+                    raise LookupError("upsert_temporal_graph_edge returned no rows.")
+                return TemporalGraphEdge.model_validate(_normalize_record(refreshed))
+            return TemporalGraphEdge.model_validate(
+                _normalize_record(self._require_record(response, operation="upsert_temporal_graph_edge"))
+            )
+
+        response, _ = await self._insert_payload("temporal_graph_edges", payload, operation="insert_temporal_graph_edge")
+        return TemporalGraphEdge.model_validate(
+            _normalize_record(self._require_record(response, operation="insert_temporal_graph_edge"))
+        )
+
+    async def list_temporal_graph_edges(
+        self,
+        limit: int = 200,
+        agent_namespace: str | None = None,
+        relation_types: list[str] | None = None,
+    ) -> list[TemporalGraphEdge]:
+        requested_types = [str(value).strip() for value in (relation_types or []) if str(value).strip()]
+
+        def _query() -> Any:
+            query = self._schema_client().table("temporal_graph_edges").select("*")
+            if requested_types:
+                query = query.in_("relation", requested_types)
+            query = query.order("weight", desc=True).order("last_observed_at", desc=True).limit(max(limit * 4, 100))
+            return query.execute()
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "temporal_graph_edges"):
+                logger.info("Memory temporal_graph_edges table is not available yet; returning an empty graph-edge list.")
+                return []
+            raise
+
+        edges = [TemporalGraphEdge.model_validate(_normalize_record(item)) for item in _response_rows(response)]
+        edges = _filter_records_by_agent_namespace(edges, agent_namespace)
+        return edges[:limit]
+
+    async def delete_temporal_graph_edge(
+        self,
+        edge_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        normalized_key = str(edge_key or "").strip()
+        if not normalized_key:
+            return False
+
+        def _delete() -> Any:
+            return (
+                self._schema_client()
+                .table("temporal_graph_edges")
+                .delete()
+                .eq("edge_key", normalized_key)
+                .eq("agent_namespace", _resolved_agent_namespace(agent_namespace))
+                .execute()
+            )
+
+        try:
+            await self._run(_delete)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "temporal_graph_edges"):
+                logger.info("Memory temporal_graph_edges table is not available yet; skipping graph-edge delete.")
+                return False
+            raise
+        return True
+
+    async def search_temporal_graph_paths(
+        self,
+        query: str,
+        limit: int = 6,
+        max_hops: int = 3,
+        agent_namespace: str | None = None,
+    ) -> list[TemporalGraphPath]:
+        query_tokens = _query_term_variants(query)
+        if not query_tokens:
+            return []
+
+        nodes = await self.list_temporal_graph_nodes(limit=max(limit * 20, 120), agent_namespace=agent_namespace)
+        edges = await self.list_temporal_graph_edges(limit=max(limit * 50, 400), agent_namespace=agent_namespace)
+        if not nodes or not edges:
+            return []
+
+        node_by_id = {str(node.id): node for node in nodes if node.id is not None}
+        if not node_by_id:
+            return []
+
+        node_tokens = {
+            node_id: _temporal_graph_tokens(node.title, node.summary or "", " ".join(node.tags))
+            for node_id, node in node_by_id.items()
+        }
+
+        adjacency: dict[str, list[TemporalGraphEdge]] = {}
+        for edge in edges:
+            from_id = str(edge.from_node_id)
+            to_id = str(edge.to_node_id)
+            if from_id not in node_by_id or to_id not in node_by_id:
+                continue
+            adjacency.setdefault(from_id, []).append(edge)
+
+        seed_ids = sorted(
+            [
+                node_id
+                for node_id, tokens in node_tokens.items()
+                if _temporal_graph_overlap(query_tokens, tokens) > 0
+            ],
+            key=lambda node_id: (
+                _temporal_graph_overlap(query_tokens, node_tokens[node_id]),
+                float(node_by_id[node_id].importance_score),
+                float(node_by_id[node_id].confidence),
+            ),
+            reverse=True,
+        )[: max(limit * 3, 8)]
+        if not seed_ids:
+            return []
+
+        capped_hops = max(1, min(int(max_hops), 4))
+        best_paths: dict[str, tuple[float, TemporalGraphPath]] = {}
+
+        for seed_id in seed_ids:
+            queue: list[tuple[str, list[str], list[TemporalGraphEdge], int]] = [(seed_id, [seed_id], [], 0)]
+            while queue:
+                current_id, node_chain, edge_chain, depth = queue.pop(0)
+                if depth >= capped_hops:
+                    continue
+                for edge in adjacency.get(current_id, []):
+                    next_id = str(edge.to_node_id)
+                    if next_id in node_chain:
+                        continue
+
+                    next_node_chain = [*node_chain, next_id]
+                    next_edge_chain = [*edge_chain, edge]
+                    end_node = node_by_id[next_id]
+                    end_overlap = _temporal_graph_overlap(query_tokens, node_tokens.get(next_id, set()))
+
+                    if end_overlap > 0 and len(next_edge_chain) >= 1:
+                        path_nodes = [node_by_id[node_id] for node_id in next_node_chain]
+                        hop_count = len(next_edge_chain)
+                        edge_confidence = sum(float(item.confidence) for item in next_edge_chain) / float(hop_count)
+                        node_confidence = sum(float(item.confidence) for item in path_nodes) / float(len(path_nodes))
+                        confidence = min(1.0, (edge_confidence * 0.6) + (node_confidence * 0.4))
+                        evidence_score = sum(
+                            max(0.0, float(item.weight)) + (float(item.evidence_count) * 0.1)
+                            for item in next_edge_chain
+                        )
+                        latest_observed = max(
+                            [item.last_observed_at for item in next_edge_chain] + [item.last_observed_at for item in path_nodes]
+                        )
+
+                        parts: list[str] = [path_nodes[0].title]
+                        for hop_idx, hop_edge in enumerate(next_edge_chain):
+                            target_node = path_nodes[hop_idx + 1]
+                            parts.append(f"-[{hop_edge.relation}]-> {target_node.title}")
+                        path_text = " ".join(parts)
+
+                        node_key_chain = [node.node_key for node in path_nodes]
+                        relation_chain = [edge_item.relation for edge_item in next_edge_chain]
+                        signature = "|".join([*node_key_chain, "#", *relation_chain])
+                        digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:18]
+                        score = (
+                            (end_overlap * 2.0)
+                            + confidence
+                            + min(2.0, evidence_score * 0.2)
+                            + max(0.0, float(end_node.importance_score) * 0.3)
+                            - (hop_count * 0.05)
+                        )
+
+                        path = TemporalGraphPath(
+                            path_key=f"auto:tgraph:path:{digest}",
+                            start_node_key=path_nodes[0].node_key,
+                            end_node_key=end_node.node_key,
+                            hop_count=hop_count,
+                            path_text=path_text,
+                            confidence=confidence,
+                            evidence_score=evidence_score,
+                            last_observed_at=latest_observed,
+                            supporting_node_keys=node_key_chain,
+                            supporting_edge_keys=[edge_item.edge_key for edge_item in next_edge_chain],
+                            tags=sorted({tag for node_item in path_nodes for tag in node_item.tags} | {"temporal-graph", "multi-hop"}),
+                        )
+
+                        existing = best_paths.get(signature)
+                        if existing is None or score > existing[0]:
+                            best_paths[signature] = (score, path)
+
+                    if depth + 1 < capped_hops:
+                        queue.append((next_id, next_node_chain, next_edge_chain, depth + 1))
+
+        ranked = sorted(
+            best_paths.values(),
+            key=lambda item: (item[0], item[1].confidence, item[1].evidence_score, -item[1].hop_count),
+            reverse=True,
+        )
+        return [path for _, path in ranked[:limit]]
+
     async def upsert_reflection(self, reflection: Reflection) -> Reflection:
         payload = _ensure_payload_agent_namespace(_serialize_value(reflection.model_dump(exclude_none=True)))
         reflection_key = str(payload.get("reflection_key") or "").strip()
@@ -2385,6 +2779,53 @@ class RemoteTransport:
         limit: int = 50,
         agent_namespace: str | None = None,
     ) -> list[CaseEvidenceLink]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def upsert_temporal_graph_node(self, node: TemporalGraphNode) -> TemporalGraphNode:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def list_temporal_graph_nodes(
+        self,
+        limit: int = 50,
+        agent_namespace: str | None = None,
+        node_types: list[str] | None = None,
+    ) -> list[TemporalGraphNode]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def delete_temporal_graph_node(
+        self,
+        node_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def upsert_temporal_graph_edge(self, edge: TemporalGraphEdge) -> TemporalGraphEdge:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def list_temporal_graph_edges(
+        self,
+        limit: int = 200,
+        agent_namespace: str | None = None,
+        relation_types: list[str] | None = None,
+    ) -> list[TemporalGraphEdge]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def delete_temporal_graph_edge(
+        self,
+        edge_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def search_temporal_graph_paths(
+        self,
+        query: str,
+        limit: int = 6,
+        max_hops: int = 3,
+        agent_namespace: str | None = None,
+    ) -> list[TemporalGraphPath]:
         raise NotImplementedError("RemoteTransport is not implemented yet.")
 
     async def upsert_reflection(self, reflection: Reflection) -> Reflection:

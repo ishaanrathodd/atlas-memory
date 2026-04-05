@@ -33,6 +33,8 @@ from memory.models import (
     PatternType,
     ReflectionStatus,
     Session,
+    TemporalGraphEdge,
+    TemporalGraphNode,
 )
 from memory.transport import (
     _agent_namespace_matches,
@@ -73,6 +75,8 @@ REFLECTIONS_LOOKBACK_DAYS = 3650
 REFLECTIONS_SESSION_LIMIT = 96
 CASE_MEMORY_LOOKBACK_DAYS = 3650
 CASE_MEMORY_SOURCE_LIMIT = 256
+TEMPORAL_GRAPH_LOOKBACK_DAYS = 3650
+TEMPORAL_GRAPH_SOURCE_LIMIT = 512
 _MANAGED_ACTIVE_STATE_KEYS = {
     "auto:project:primary",
     "auto:project:secondary",
@@ -1256,6 +1260,20 @@ def _memory_case_overlap_score(outcome: DecisionOutcome, pattern: Pattern) -> in
         )
     ) - _GROUNDING_STOPWORDS
     return len(outcome_tokens.intersection(pattern_tokens))
+
+
+def _temporal_graph_node_key(node_type: str, source_key: str) -> str:
+    return _derived_memory_key("auto:tgraph:node", f"{node_type}:{source_key}")
+
+
+def _temporal_graph_edge_key(from_node_key: str, relation: str, to_node_key: str) -> str:
+    return _derived_memory_key("auto:tgraph:edge", f"{from_node_key}|{relation}|{to_node_key}")
+
+
+def _temporal_graph_text_overlap(left: str, right: str) -> int:
+    left_tokens = set(re.findall(r"[a-z0-9]+", (left or "").lower())) - _GROUNDING_STOPWORDS
+    right_tokens = set(re.findall(r"[a-z0-9]+", (right or "").lower())) - _GROUNDING_STOPWORDS
+    return len(left_tokens.intersection(right_tokens))
 
 
 def _directive_kind(content: str) -> str:
@@ -3564,6 +3582,480 @@ async def refresh_reflections(
         "reflections_upserted": upserted,
         "reflections_pruned": pruned,
         "reflection_count": len(visible_reflections),
+    }
+
+
+async def refresh_temporal_graph(
+    client: MemoryClient,
+    *,
+    lookback_days: int = TEMPORAL_GRAPH_LOOKBACK_DAYS,
+    now: datetime | None = None,
+    agent_namespace: str | None = None,
+) -> dict[str, Any]:
+    list_nodes = getattr(client.transport, "list_temporal_graph_nodes", None)
+    upsert_node = getattr(client.transport, "upsert_temporal_graph_node", None)
+    delete_node = getattr(client.transport, "delete_temporal_graph_node", None)
+    list_edges = getattr(client.transport, "list_temporal_graph_edges", None)
+    upsert_edge = getattr(client.transport, "upsert_temporal_graph_edge", None)
+    delete_edge = getattr(client.transport, "delete_temporal_graph_edge", None)
+
+    if not callable(list_nodes) or not callable(upsert_node) or not callable(list_edges) or not callable(upsert_edge):
+        return {
+            "temporal_graph_nodes_upserted": 0,
+            "temporal_graph_edges_upserted": 0,
+            "temporal_graph_nodes_pruned": 0,
+            "temporal_graph_edges_pruned": 0,
+            "temporal_graph_node_count": 0,
+            "temporal_graph_edge_count": 0,
+            "skipped": "transport-unsupported",
+        }
+
+    reference_time = now or _utcnow()
+    since = reference_time - timedelta(days=lookback_days)
+
+    existing_nodes = await list_nodes(limit=4096, agent_namespace=agent_namespace)
+    managed_existing_node_keys = {
+        node.node_key
+        for node in existing_nodes
+        if str(node.node_key or "").startswith("auto:tgraph:node:")
+    }
+    existing_edges = await list_edges(limit=8192, agent_namespace=agent_namespace)
+    managed_existing_edge_keys = {
+        edge.edge_key
+        for edge in existing_edges
+        if str(edge.edge_key or "").startswith("auto:tgraph:edge:")
+    }
+
+    outcomes = await client.list_decision_outcomes(
+        limit=TEMPORAL_GRAPH_SOURCE_LIMIT,
+        agent_namespace=agent_namespace,
+        statuses=[
+            DecisionOutcomeStatus.SUCCESS.value,
+            DecisionOutcomeStatus.FAILURE.value,
+            DecisionOutcomeStatus.MIXED.value,
+        ],
+    )
+    patterns = await client.list_patterns(limit=TEMPORAL_GRAPH_SOURCE_LIMIT, agent_namespace=agent_namespace)
+    list_memory_cases = getattr(client.transport, "list_memory_cases", None)
+    if callable(list_memory_cases):
+        memory_cases = await list_memory_cases(
+            limit=TEMPORAL_GRAPH_SOURCE_LIMIT,
+            agent_namespace=agent_namespace,
+            outcome_statuses=[
+                DecisionOutcomeStatus.SUCCESS.value,
+                DecisionOutcomeStatus.FAILURE.value,
+                DecisionOutcomeStatus.MIXED.value,
+            ],
+        )
+    else:
+        memory_cases = []
+    reflections = await client.list_reflections(
+        limit=TEMPORAL_GRAPH_SOURCE_LIMIT,
+        agent_namespace=agent_namespace,
+        statuses=[ReflectionStatus.SUPPORTED.value, ReflectionStatus.TENTATIVE.value],
+    )
+
+    managed_kept_node_keys: set[str] = set()
+    managed_kept_edge_keys: set[str] = set()
+    node_by_key: dict[str, TemporalGraphNode] = {}
+    outcome_node_key_by_id: dict[str, str] = {}
+    pattern_node_key_by_id: dict[str, str] = {}
+    case_node_key_by_id: dict[str, str] = {}
+    reflection_node_key_by_id: dict[str, str] = {}
+    upserted_nodes = 0
+    upserted_edges = 0
+
+    async def _store_node(
+        *,
+        node_type: str,
+        source_key: str,
+        title: str,
+        summary: str,
+        confidence: float,
+        importance_score: float,
+        first_observed_at: datetime,
+        last_observed_at: datetime,
+        source_episode_ids: list[Any] | None = None,
+        source_outcome_ids: list[Any] | None = None,
+        source_pattern_ids: list[Any] | None = None,
+        source_case_ids: list[Any] | None = None,
+        source_reflection_ids: list[Any] | None = None,
+        tags: list[str] | None = None,
+    ) -> TemporalGraphNode:
+        nonlocal upserted_nodes
+        node_key = _temporal_graph_node_key(node_type, source_key)
+        record = TemporalGraphNode(
+            agent_namespace=agent_namespace,
+            node_key=node_key,
+            node_type=node_type,
+            title=_collapse_whitespace(title, max_length=120),
+            summary=_collapse_whitespace(summary, max_length=320),
+            confidence=min(0.98, max(0.0, float(confidence))),
+            importance_score=max(0.0, float(importance_score)),
+            first_observed_at=first_observed_at,
+            last_observed_at=last_observed_at,
+            source_episode_ids=[value for value in (source_episode_ids or []) if value is not None],
+            source_outcome_ids=[value for value in (source_outcome_ids or []) if value is not None],
+            source_pattern_ids=[value for value in (source_pattern_ids or []) if value is not None],
+            source_case_ids=[value for value in (source_case_ids or []) if value is not None],
+            source_reflection_ids=[value for value in (source_reflection_ids or []) if value is not None],
+            tags=sorted({str(tag).strip() for tag in (tags or []) if str(tag).strip()}),
+            updated_at=reference_time,
+        )
+        stored = await upsert_node(record)
+        managed_kept_node_keys.add(stored.node_key)
+        node_by_key[stored.node_key] = stored
+        upserted_nodes += 1
+        return stored
+
+    async def _store_edge(
+        *,
+        from_node_key: str,
+        to_node_key: str,
+        relation: str,
+        confidence: float,
+        weight: float,
+        evidence_count: int,
+        first_observed_at: datetime,
+        last_observed_at: datetime,
+        source_case_ids: list[Any] | None = None,
+        source_outcome_ids: list[Any] | None = None,
+        source_pattern_ids: list[Any] | None = None,
+        source_reflection_ids: list[Any] | None = None,
+        tags: list[str] | None = None,
+    ) -> None:
+        nonlocal upserted_edges
+        from_node = node_by_key.get(from_node_key)
+        to_node = node_by_key.get(to_node_key)
+        if from_node is None or to_node is None or from_node.id is None or to_node.id is None:
+            return
+        edge_key = _temporal_graph_edge_key(from_node_key, relation, to_node_key)
+        if edge_key in managed_kept_edge_keys:
+            return
+        stored = await upsert_edge(
+            TemporalGraphEdge(
+                agent_namespace=agent_namespace,
+                edge_key=edge_key,
+                from_node_id=from_node.id,
+                to_node_id=to_node.id,
+                relation=relation,
+                confidence=min(0.98, max(0.0, float(confidence))),
+                weight=max(0.0, float(weight)),
+                evidence_count=max(1, int(evidence_count)),
+                first_observed_at=first_observed_at,
+                last_observed_at=last_observed_at,
+                source_case_ids=[value for value in (source_case_ids or []) if value is not None],
+                source_outcome_ids=[value for value in (source_outcome_ids or []) if value is not None],
+                source_pattern_ids=[value for value in (source_pattern_ids or []) if value is not None],
+                source_reflection_ids=[value for value in (source_reflection_ids or []) if value is not None],
+                tags=sorted({str(tag).strip() for tag in (tags or []) if str(tag).strip()}),
+                updated_at=reference_time,
+            )
+        )
+        managed_kept_edge_keys.add(stored.edge_key)
+        upserted_edges += 1
+
+    filtered_outcomes = [
+        outcome
+        for outcome in outcomes
+        if outcome.event_time >= since
+        if float(outcome.confidence) >= 0.5
+        if float(outcome.importance_score) >= 0.45
+        if not _looks_like_low_value_outcome_text(outcome.decision)
+        if not _looks_like_low_value_outcome_text(outcome.outcome)
+    ]
+    for outcome in filtered_outcomes:
+        source_key = str(outcome.outcome_key or outcome.id or "")
+        if not source_key:
+            continue
+        stored = await _store_node(
+            node_type="outcome",
+            source_key=source_key,
+            title=outcome.title or outcome.decision,
+            summary=" ".join(part for part in [outcome.decision, outcome.outcome, outcome.lesson or ""] if part),
+            confidence=float(outcome.confidence),
+            importance_score=float(outcome.importance_score),
+            first_observed_at=outcome.event_time,
+            last_observed_at=outcome.event_time,
+            source_episode_ids=[str(value) for value in outcome.source_episode_ids],
+            source_outcome_ids=[outcome.id],
+            tags=[*outcome.tags, "derived", "temporal-graph", "outcome"],
+        )
+        if outcome.id is not None:
+            outcome_node_key_by_id[str(outcome.id)] = stored.node_key
+
+    filtered_patterns = [
+        pattern
+        for pattern in patterns
+        if pattern.last_observed_at >= since
+        if float(pattern.confidence) >= 0.5
+        if float(pattern.impact_score) >= 0.45
+    ]
+    for pattern in filtered_patterns:
+        source_key = str(pattern.pattern_key or pattern.id or "")
+        if not source_key:
+            continue
+        stored = await _store_node(
+            node_type="pattern",
+            source_key=source_key,
+            title=pattern.statement,
+            summary=" ".join(part for part in [pattern.statement, pattern.description or ""] if part),
+            confidence=float(pattern.confidence),
+            importance_score=float(pattern.impact_score),
+            first_observed_at=pattern.first_observed_at,
+            last_observed_at=pattern.last_observed_at,
+            source_episode_ids=[str(value) for value in pattern.supporting_episode_ids],
+            source_pattern_ids=[pattern.id],
+            tags=[*pattern.tags, "derived", "temporal-graph", "pattern", pattern.pattern_type.value],
+        )
+        if pattern.id is not None:
+            pattern_node_key_by_id[str(pattern.id)] = stored.node_key
+
+    filtered_cases = [
+        case
+        for case in memory_cases
+        if case.last_observed_at >= since
+        if float(case.confidence) >= 0.5
+        if float(case.impact_score) >= 0.45
+    ]
+    for case in filtered_cases:
+        source_key = str(case.case_key or case.id or "")
+        if not source_key:
+            continue
+        stored = await _store_node(
+            node_type="case",
+            source_key=source_key,
+            title=case.title or case.problem_statement,
+            summary=" ".join(part for part in [case.problem_statement, case.resolution_summary or ""] if part),
+            confidence=float(case.confidence),
+            importance_score=float(case.impact_score),
+            first_observed_at=case.first_observed_at,
+            last_observed_at=case.last_observed_at,
+            source_episode_ids=[str(value) for value in case.source_episode_ids],
+            source_outcome_ids=[str(value) for value in case.source_outcome_ids],
+            source_pattern_ids=[str(value) for value in case.source_pattern_ids],
+            source_case_ids=[case.id],
+            tags=[*case.tags, "derived", "temporal-graph", "case", case.outcome_status.value],
+        )
+        if case.id is not None:
+            case_node_key_by_id[str(case.id)] = stored.node_key
+
+    filtered_reflections = [
+        reflection
+        for reflection in reflections
+        if reflection.last_observed_at >= since
+        if float(reflection.confidence) >= 0.5
+    ]
+    for reflection in filtered_reflections:
+        source_key = str(reflection.reflection_key or reflection.id or "")
+        if not source_key:
+            continue
+        stored = await _store_node(
+            node_type="reflection",
+            source_key=source_key,
+            title=reflection.statement,
+            summary=" ".join(part for part in [reflection.statement, reflection.evidence_summary or ""] if part),
+            confidence=float(reflection.confidence),
+            importance_score=float(reflection.confidence),
+            first_observed_at=reflection.first_observed_at,
+            last_observed_at=reflection.last_observed_at,
+            source_episode_ids=[str(value) for value in reflection.supporting_episode_ids],
+            source_reflection_ids=[reflection.id],
+            tags=[*reflection.tags, "derived", "temporal-graph", "reflection", reflection.kind.value],
+        )
+        if reflection.id is not None:
+            reflection_node_key_by_id[str(reflection.id)] = stored.node_key
+
+    outcomes_by_id = {str(item.id): item for item in filtered_outcomes if item.id is not None}
+    patterns_by_id = {str(item.id): item for item in filtered_patterns if item.id is not None}
+
+    for case in filtered_cases:
+        from_node_key = case_node_key_by_id.get(str(case.id)) if case.id is not None else None
+        if not from_node_key:
+            continue
+        for outcome_id in case.source_outcome_ids:
+            outcome = outcomes_by_id.get(str(outcome_id))
+            to_node_key = outcome_node_key_by_id.get(str(outcome_id))
+            if outcome is None or to_node_key is None:
+                continue
+            await _store_edge(
+                from_node_key=from_node_key,
+                to_node_key=to_node_key,
+                relation="supported_by_outcome",
+                confidence=(float(case.confidence) * 0.55) + (float(outcome.confidence) * 0.45),
+                weight=(float(case.impact_score) * 0.5) + (float(outcome.importance_score) * 0.5),
+                evidence_count=max(1, len(case.source_episode_ids) + len(outcome.source_episode_ids)),
+                first_observed_at=min(case.first_observed_at, outcome.event_time),
+                last_observed_at=max(case.last_observed_at, outcome.event_time),
+                source_case_ids=[case.id],
+                source_outcome_ids=[outcome.id],
+                tags=["derived", "temporal-graph", "case", "outcome"],
+            )
+        for pattern_id in case.source_pattern_ids:
+            pattern = patterns_by_id.get(str(pattern_id))
+            to_node_key = pattern_node_key_by_id.get(str(pattern_id))
+            if pattern is None or to_node_key is None:
+                continue
+            overlap = _temporal_graph_text_overlap(case.problem_statement, pattern.statement)
+            await _store_edge(
+                from_node_key=from_node_key,
+                to_node_key=to_node_key,
+                relation="supported_by_pattern",
+                confidence=(float(case.confidence) * 0.6) + (float(pattern.confidence) * 0.4),
+                weight=(float(case.impact_score) * 0.55) + (float(pattern.impact_score) * 0.45) + min(0.2, overlap * 0.03),
+                evidence_count=max(1, overlap + len(case.source_episode_ids)),
+                first_observed_at=min(case.first_observed_at, pattern.first_observed_at),
+                last_observed_at=max(case.last_observed_at, pattern.last_observed_at),
+                source_case_ids=[case.id],
+                source_pattern_ids=[pattern.id],
+                tags=["derived", "temporal-graph", "case", "pattern"],
+            )
+
+    for outcome in filtered_outcomes:
+        from_node_key = outcome_node_key_by_id.get(str(outcome.id)) if outcome.id is not None else None
+        if not from_node_key:
+            continue
+        ranked_patterns = sorted(
+            [
+                pattern
+                for pattern in filtered_patterns
+                if _memory_case_overlap_score(outcome, pattern) > 0
+            ],
+            key=lambda pattern: (
+                _memory_case_overlap_score(outcome, pattern),
+                float(pattern.impact_score),
+                float(pattern.confidence),
+            ),
+            reverse=True,
+        )[:2]
+        for pattern in ranked_patterns:
+            to_node_key = pattern_node_key_by_id.get(str(pattern.id)) if pattern.id is not None else None
+            if not to_node_key:
+                continue
+            overlap = _memory_case_overlap_score(outcome, pattern)
+            await _store_edge(
+                from_node_key=from_node_key,
+                to_node_key=to_node_key,
+                relation="shares_failure_signature",
+                confidence=(float(outcome.confidence) * 0.55) + (float(pattern.confidence) * 0.45),
+                weight=(float(outcome.importance_score) * 0.45) + (float(pattern.impact_score) * 0.45) + min(0.2, overlap * 0.03),
+                evidence_count=max(1, overlap),
+                first_observed_at=min(outcome.event_time, pattern.first_observed_at),
+                last_observed_at=max(outcome.event_time, pattern.last_observed_at),
+                source_outcome_ids=[outcome.id],
+                source_pattern_ids=[pattern.id],
+                tags=["derived", "temporal-graph", "outcome", "pattern"],
+            )
+
+    for reflection in filtered_reflections:
+        reflection_node_key = reflection_node_key_by_id.get(str(reflection.id)) if reflection.id is not None else None
+        if not reflection_node_key:
+            continue
+
+        reflection_text = " ".join(part for part in [reflection.statement, reflection.evidence_summary or ""] if part)
+        ranked_patterns = sorted(
+            [
+                pattern
+                for pattern in filtered_patterns
+                if _temporal_graph_text_overlap(
+                    " ".join([pattern.statement, pattern.description or ""]),
+                    reflection_text,
+                ) >= 2
+            ],
+            key=lambda pattern: (
+                _temporal_graph_text_overlap(
+                    " ".join([pattern.statement, pattern.description or ""]),
+                    reflection_text,
+                ),
+                float(pattern.impact_score),
+            ),
+            reverse=True,
+        )[:2]
+        for pattern in ranked_patterns:
+            from_node_key = pattern_node_key_by_id.get(str(pattern.id)) if pattern.id is not None else None
+            if not from_node_key:
+                continue
+            overlap = _temporal_graph_text_overlap(
+                " ".join([pattern.statement, pattern.description or ""]),
+                reflection_text,
+            )
+            await _store_edge(
+                from_node_key=from_node_key,
+                to_node_key=reflection_node_key,
+                relation="hypothesizes",
+                confidence=(float(pattern.confidence) * 0.55) + (float(reflection.confidence) * 0.45),
+                weight=(float(pattern.impact_score) * 0.5) + (float(reflection.confidence) * 0.4) + min(0.2, overlap * 0.03),
+                evidence_count=max(1, overlap),
+                first_observed_at=min(pattern.first_observed_at, reflection.first_observed_at),
+                last_observed_at=max(pattern.last_observed_at, reflection.last_observed_at),
+                source_pattern_ids=[pattern.id],
+                source_reflection_ids=[reflection.id],
+                tags=["derived", "temporal-graph", "pattern", "reflection"],
+            )
+
+        ranked_outcomes = sorted(
+            [
+                outcome
+                for outcome in filtered_outcomes
+                if _temporal_graph_text_overlap(
+                    " ".join([outcome.decision, outcome.outcome, outcome.lesson or ""]),
+                    reflection_text,
+                ) >= 2
+            ],
+            key=lambda outcome: (
+                _temporal_graph_text_overlap(
+                    " ".join([outcome.decision, outcome.outcome, outcome.lesson or ""]),
+                    reflection_text,
+                ),
+                float(outcome.importance_score),
+            ),
+            reverse=True,
+        )[:2]
+        for outcome in ranked_outcomes:
+            from_node_key = outcome_node_key_by_id.get(str(outcome.id)) if outcome.id is not None else None
+            if not from_node_key:
+                continue
+            overlap = _temporal_graph_text_overlap(
+                " ".join([outcome.decision, outcome.outcome, outcome.lesson or ""]),
+                reflection_text,
+            )
+            await _store_edge(
+                from_node_key=from_node_key,
+                to_node_key=reflection_node_key,
+                relation="interpreted_as_reflection",
+                confidence=(float(outcome.confidence) * 0.55) + (float(reflection.confidence) * 0.45),
+                weight=(float(outcome.importance_score) * 0.5) + (float(reflection.confidence) * 0.4) + min(0.2, overlap * 0.03),
+                evidence_count=max(1, overlap),
+                first_observed_at=min(outcome.event_time, reflection.first_observed_at),
+                last_observed_at=max(outcome.event_time, reflection.last_observed_at),
+                source_outcome_ids=[outcome.id],
+                source_reflection_ids=[reflection.id],
+                tags=["derived", "temporal-graph", "outcome", "reflection"],
+            )
+
+    pruned_nodes = 0
+    if callable(delete_node):
+        for stale_key in sorted(managed_existing_node_keys - managed_kept_node_keys):
+            removed = await delete_node(stale_key, agent_namespace=agent_namespace)
+            if removed:
+                pruned_nodes += 1
+
+    pruned_edges = 0
+    if callable(delete_edge):
+        for stale_key in sorted(managed_existing_edge_keys - managed_kept_edge_keys):
+            removed = await delete_edge(stale_key, agent_namespace=agent_namespace)
+            if removed:
+                pruned_edges += 1
+
+    visible_nodes = await list_nodes(limit=64, agent_namespace=agent_namespace)
+    visible_edges = await list_edges(limit=256, agent_namespace=agent_namespace)
+    return {
+        "temporal_graph_nodes_upserted": upserted_nodes,
+        "temporal_graph_edges_upserted": upserted_edges,
+        "temporal_graph_nodes_pruned": pruned_nodes,
+        "temporal_graph_edges_pruned": pruned_edges,
+        "temporal_graph_node_count": len(visible_nodes),
+        "temporal_graph_edge_count": len(visible_edges),
     }
 
 

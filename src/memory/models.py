@@ -607,3 +607,91 @@ class SessionHandoff(MemoryBaseModel):
     @classmethod
     def _coerce_null_session_handoff_lists(cls, v: Any) -> Any:
         return v if v is not None else []
+
+
+class TemporalGraphNode(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    node_key: str
+    node_type: str
+    title: str
+    summary: str | None = None
+    confidence: float = Field(default=0.72, ge=0.0, le=1.0)
+    importance_score: float = Field(default=0.6, ge=0.0)
+    first_observed_at: AwareDatetime
+    last_observed_at: AwareDatetime
+    source_episode_ids: list[UUID] = Field(default_factory=list)
+    source_fact_ids: list[UUID] = Field(default_factory=list)
+    source_outcome_ids: list[UUID] = Field(default_factory=list)
+    source_pattern_ids: list[UUID] = Field(default_factory=list)
+    source_case_ids: list[UUID] = Field(default_factory=list)
+    source_reflection_ids: list[UUID] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+
+    @field_validator(
+        "source_episode_ids",
+        "source_fact_ids",
+        "source_outcome_ids",
+        "source_pattern_ids",
+        "source_case_ids",
+        "source_reflection_ids",
+        "tags",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_null_temporal_graph_node_lists(cls, v: Any) -> Any:
+        return v if v is not None else []
+
+
+class TemporalGraphEdge(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    edge_key: str
+    from_node_id: UUID
+    to_node_id: UUID
+    relation: str
+    confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    weight: float = Field(default=0.6, ge=0.0)
+    evidence_count: int = Field(default=1, ge=0)
+    first_observed_at: AwareDatetime
+    last_observed_at: AwareDatetime
+    source_case_ids: list[UUID] = Field(default_factory=list)
+    source_outcome_ids: list[UUID] = Field(default_factory=list)
+    source_pattern_ids: list[UUID] = Field(default_factory=list)
+    source_reflection_ids: list[UUID] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+
+    @field_validator(
+        "source_case_ids",
+        "source_outcome_ids",
+        "source_pattern_ids",
+        "source_reflection_ids",
+        "tags",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_null_temporal_graph_edge_lists(cls, v: Any) -> Any:
+        return v if v is not None else []
+
+
+class TemporalGraphPath(MemoryBaseModel):
+    path_key: str
+    start_node_key: str
+    end_node_key: str
+    hop_count: int = Field(default=1, ge=1)
+    path_text: str
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence_score: float = Field(default=0.0, ge=0.0)
+    last_observed_at: AwareDatetime | None = None
+    supporting_node_keys: list[str] = Field(default_factory=list)
+    supporting_edge_keys: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("supporting_node_keys", "supporting_edge_keys", "tags", mode="before")
+    @classmethod
+    def _coerce_null_temporal_graph_path_lists(cls, v: Any) -> Any:
+        return v if v is not None else []

@@ -41,6 +41,7 @@ from memory.models import (
     ReflectionStatus,
     Session,
     SessionHandoff,
+    TemporalGraphPath,
     TimelineEvent,
     TimelineEventKind,
 )
@@ -79,6 +80,7 @@ class MockTransport:
         self.decision_outcomes: list[DecisionOutcome] = []
         self.patterns: list[Pattern] = []
         self.reflections: list[Reflection] = []
+        self.temporal_graph_paths: list[TemporalGraphPath] = []
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
         self.session_handoffs: list[SessionHandoff] = []
@@ -93,6 +95,9 @@ class MockTransport:
         self.last_list_timeline_limit: int | None = None
         self.last_list_memory_cases_namespace: str | None | object = "__unset__"
         self.last_list_memory_cases_statuses: list[str] | None = None
+        self.last_search_temporal_graph_query: str | None = None
+        self.last_search_temporal_graph_namespace: str | None | object = "__unset__"
+        self.last_search_temporal_graph_max_hops: int | None = None
         self.last_list_handoffs_namespace: str | None | object = "__unset__"
 
     async def insert_session(self, session: Session) -> Session:
@@ -300,6 +305,23 @@ class MockTransport:
         self.last_list_reflections_namespace = agent_namespace
         reflections = sorted(self.reflections, key=lambda reflection: (reflection.confidence, reflection.last_observed_at), reverse=True)
         return reflections[:limit]
+
+    async def search_temporal_graph_paths(
+        self,
+        query: str,
+        limit: int = 6,
+        max_hops: int = 3,
+        agent_namespace: str | None = None,
+    ):
+        self.last_search_temporal_graph_query = query
+        self.last_search_temporal_graph_namespace = agent_namespace
+        self.last_search_temporal_graph_max_hops = max_hops
+        paths = sorted(
+            self.temporal_graph_paths,
+            key=lambda path: (path.confidence, path.evidence_score, -path.hop_count),
+            reverse=True,
+        )
+        return paths[:limit]
 
     async def delete_reflection(self, reflection_key: str, *, agent_namespace: str | None = None):
         _ = agent_namespace
@@ -2114,6 +2136,52 @@ async def test_collect_enrichment_payload_case_route_expands_to_four_items_for_a
     )
 
     assert len(payload.memory_cases) == 4
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_surfaces_temporal_graph_trails_for_connect_the_dots_queries() -> None:
+    _, _, transport = _build_client_with_transport()
+    now = _utcnow()
+    transport.temporal_graph_paths = [
+        TemporalGraphPath(
+            path_key="auto:tgraph:path:test-1",
+            start_node_key="auto:tgraph:node:case-checkout",
+            end_node_key="auto:tgraph:node:reflection-rollout",
+            hop_count=2,
+            path_text=(
+                "Checkout rollout without safety gates "
+                "-[supported_by_outcome]-> Production regressions "
+                "-[interpreted_as_reflection]-> Deadline pressure weakens verification depth"
+            ),
+            confidence=0.87,
+            evidence_score=1.7,
+            last_observed_at=now - timedelta(days=2),
+            supporting_node_keys=[
+                "auto:tgraph:node:case-checkout",
+                "auto:tgraph:node:outcome-regressions",
+                "auto:tgraph:node:reflection-rollout",
+            ],
+            supporting_edge_keys=[
+                "auto:tgraph:edge:case-outcome",
+                "auto:tgraph:edge:outcome-reflection",
+            ],
+            tags=["checkout", "rollout", "temporal-graph"],
+        )
+    ]
+
+    context = await enrich_context(
+        transport,
+        "connect the dots between our checkout rollout failures and why this keeps happening",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Temporal graph trails:" in context
+    assert "supported_by_outcome" in context
+    assert "interpreted_as_reflection" in context
+    assert transport.last_search_temporal_graph_namespace == "main"
+    assert transport.last_search_temporal_graph_query is not None
+    assert transport.last_search_temporal_graph_max_hops == 3
 
 
 @pytest.mark.asyncio

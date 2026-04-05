@@ -13,6 +13,7 @@ class RetrievalSignals:
     patterns_query: bool = False
     reflections_query: bool = False
     continuity_query: bool = False
+    graph_query: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,8 @@ class RetrievalPlan:
     timeline_fetch_limit: int
     case_fetch_limit: int
     analogous_case_limit: int
+    graph_path_limit: int
+    graph_hop_limit: int
     proactive_trigger_threshold: float
     proactive_min_overlap: int
 
@@ -61,6 +64,8 @@ def build_retrieval_plan(
     timeline_fetch_limit = default_timeline_fetch_limit
     case_fetch_limit = 24
     analogous_case_limit = 0
+    graph_path_limit = 0
+    graph_hop_limit = 2
     proactive_trigger_threshold = 0.72
     proactive_min_overlap = 1
 
@@ -70,6 +75,7 @@ def build_retrieval_plan(
         routes["temporal"] = RetrievalRoute(name="temporal", enabled=True, weight=1.2)
         routes["analogous_case"] = RetrievalRoute(name="analogous_case", enabled=False, weight=0.0)
         routes["outcome_aware"] = RetrievalRoute(name="outcome_aware", enabled=False, weight=0.0)
+        routes["temporal_graph"] = RetrievalRoute(name="temporal_graph", enabled=False, weight=0.0)
         relevant_episode_limit = exact_relevant_episode_limit
         recent_episode_limit = exact_recent_episode_limit
     elif signals.timeline_query:
@@ -89,6 +95,16 @@ def build_retrieval_plan(
         proactive_trigger_threshold = 0.45
         proactive_min_overlap = 1
 
+    if signals.graph_query:
+        routes["temporal_graph"] = RetrievalRoute(name="temporal_graph", enabled=True, weight=1.1)
+        routes["temporal"] = RetrievalRoute(name="temporal", enabled=True, weight=max(routes["temporal"].weight, 0.9))
+        graph_path_limit = 6
+        graph_hop_limit = 3
+    elif signals.advice_query or signals.patterns_query or signals.reflections_query:
+        routes["temporal_graph"] = RetrievalRoute(name="temporal_graph", enabled=True, weight=0.75)
+        graph_path_limit = 4
+        graph_hop_limit = 3
+
     if signals.continuity_query:
         routes["temporal"] = RetrievalRoute(
             name="temporal",
@@ -104,6 +120,8 @@ def build_retrieval_plan(
         timeline_fetch_limit=timeline_fetch_limit,
         case_fetch_limit=case_fetch_limit,
         analogous_case_limit=analogous_case_limit,
+        graph_path_limit=graph_path_limit,
+        graph_hop_limit=graph_hop_limit,
         proactive_trigger_threshold=proactive_trigger_threshold,
         proactive_min_overlap=proactive_min_overlap,
     )

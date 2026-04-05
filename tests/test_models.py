@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from memory.models import EmotionProfile, Episode, EpisodeRole, Fact, FactCategory, Platform, Session, VECTOR_DIMENSIONS
+from memory.models import EmotionProfile, Episode, EpisodeRole, Fact, FactCategory, Platform, Session, TemporalGraphEdge, TemporalGraphNode, TemporalGraphPath, VECTOR_DIMENSIONS
 
 
 def test_fact_model_round_trips_enums_and_lists() -> None:
@@ -88,3 +88,49 @@ def test_platform_accepts_arbitrary_source_name() -> None:
 
     assert session.platform.value == "signal"
     assert episode.platform.value == "signal"
+
+
+def test_temporal_graph_models_coerce_nullable_lists() -> None:
+    now = datetime.now(timezone.utc)
+    node = TemporalGraphNode(
+        node_key="auto:tgraph:node:test",
+        node_type="case",
+        title="Checkout rollout without safety gates",
+        summary="Case summary",
+        first_observed_at=now,
+        last_observed_at=now,
+        source_episode_ids=None,
+        source_fact_ids=None,
+        source_outcome_ids=None,
+        source_pattern_ids=None,
+        source_case_ids=None,
+        source_reflection_ids=None,
+        tags=None,
+    )
+    edge = TemporalGraphEdge(
+        edge_key="auto:tgraph:edge:test",
+        from_node_id=uuid4(),
+        to_node_id=uuid4(),
+        relation="supported_by_outcome",
+        first_observed_at=now,
+        last_observed_at=now,
+        source_case_ids=None,
+        source_outcome_ids=None,
+        source_pattern_ids=None,
+        source_reflection_ids=None,
+        tags=None,
+    )
+    path = TemporalGraphPath(
+        path_key="auto:tgraph:path:test",
+        start_node_key="auto:tgraph:node:a",
+        end_node_key="auto:tgraph:node:b",
+        hop_count=1,
+        path_text="A -[rel]-> B",
+        supporting_node_keys=None,
+        supporting_edge_keys=None,
+        tags=None,
+    )
+
+    assert node.source_episode_ids == []
+    assert edge.source_case_ids == []
+    assert path.supporting_node_keys == []
