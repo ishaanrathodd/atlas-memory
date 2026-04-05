@@ -70,6 +70,7 @@ def _fabricate_months_of_scenarios() -> list[dict[str, Any]]:
         "tests/fixtures/replay_eval_identity_scenarios.json",
         "tests/fixtures/replay_eval_identity_edge_scenarios.json",
         "tests/fixtures/replay_eval_identity_adversarial_scenarios.json",
+        "tests/fixtures/replay_eval_trust_adversarial_scenarios.json",
         "tests/fixtures/replay_eval_long_horizon_scenarios.json",
     ]
     base_scenarios: list[dict[str, Any]] = []

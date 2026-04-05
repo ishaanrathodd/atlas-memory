@@ -28,6 +28,10 @@ class RetrievalPlan:
     relevant_episode_limit: int
     recent_episode_limit: int
     timeline_fetch_limit: int
+    case_fetch_limit: int
+    analogous_case_limit: int
+    proactive_trigger_threshold: float
+    proactive_min_overlap: int
 
     def route_weight(self, route_name: str, *, default: float = 0.0) -> float:
         route = self.routes.get(route_name)
@@ -50,15 +54,22 @@ def build_retrieval_plan(
         "lexical": RetrievalRoute(name="lexical", enabled=True, weight=0.6),
         "temporal": RetrievalRoute(name="temporal", enabled=True, weight=0.35),
         "analogous_case": RetrievalRoute(name="analogous_case", enabled=False, weight=0.0),
+        "outcome_aware": RetrievalRoute(name="outcome_aware", enabled=False, weight=0.0),
     }
     relevant_episode_limit = default_relevant_episode_limit
     recent_episode_limit = default_recent_episode_limit
     timeline_fetch_limit = default_timeline_fetch_limit
+    case_fetch_limit = 24
+    analogous_case_limit = 0
+    proactive_trigger_threshold = 0.72
+    proactive_min_overlap = 1
 
     if signals.exact_recall_query:
         routes["semantic"] = RetrievalRoute(name="semantic", enabled=True, weight=0.5)
         routes["lexical"] = RetrievalRoute(name="lexical", enabled=True, weight=1.4)
         routes["temporal"] = RetrievalRoute(name="temporal", enabled=True, weight=1.2)
+        routes["analogous_case"] = RetrievalRoute(name="analogous_case", enabled=False, weight=0.0)
+        routes["outcome_aware"] = RetrievalRoute(name="outcome_aware", enabled=False, weight=0.0)
         relevant_episode_limit = exact_relevant_episode_limit
         recent_episode_limit = exact_recent_episode_limit
     elif signals.timeline_query:
@@ -68,19 +79,33 @@ def build_retrieval_plan(
         timeline_fetch_limit = max(default_timeline_fetch_limit, 20)
 
     if signals.advice_query or signals.patterns_query or signals.reflections_query:
-        routes["analogous_case"] = RetrievalRoute(name="analogous_case", enabled=True, weight=0.7)
+        routes["analogous_case"] = RetrievalRoute(name="analogous_case", enabled=True, weight=0.95)
+        routes["outcome_aware"] = RetrievalRoute(name="outcome_aware", enabled=True, weight=0.9)
+        routes["semantic"] = RetrievalRoute(name="semantic", enabled=True, weight=max(routes["semantic"].weight, 0.9))
+        routes["lexical"] = RetrievalRoute(name="lexical", enabled=True, weight=max(routes["lexical"].weight, 0.9))
+        routes["temporal"] = RetrievalRoute(name="temporal", enabled=True, weight=max(routes["temporal"].weight, 0.45))
+        case_fetch_limit = 36
+        analogous_case_limit = 4
+        proactive_trigger_threshold = 0.45
+        proactive_min_overlap = 1
+
     if signals.continuity_query:
         routes["temporal"] = RetrievalRoute(
             name="temporal",
             enabled=True,
             weight=max(routes["temporal"].weight, 0.9),
         )
+        recent_episode_limit = max(recent_episode_limit, 5)
 
     return RetrievalPlan(
         routes=routes,
         relevant_episode_limit=relevant_episode_limit,
         recent_episode_limit=recent_episode_limit,
         timeline_fetch_limit=timeline_fetch_limit,
+        case_fetch_limit=case_fetch_limit,
+        analogous_case_limit=analogous_case_limit,
+        proactive_trigger_threshold=proactive_trigger_threshold,
+        proactive_min_overlap=proactive_min_overlap,
     )
 
 

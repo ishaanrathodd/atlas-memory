@@ -2065,6 +2065,77 @@ async def test_enrich_context_analogous_case_second_pass_prefers_evidence_rich_f
 
 
 @pytest.mark.asyncio
+async def test_collect_enrichment_payload_case_route_expands_to_four_items_for_advice_queries() -> None:
+    _, _, transport = _build_client_with_transport()
+    now = _utcnow()
+
+    transport.memory_cases = [
+        MemoryCase(
+            id=uuid4(),
+            agent_namespace="main",
+            case_key=f"auto:case:checkout-{index}",
+            title=f"Checkout rollout case {index}",
+            problem_statement="Checkout migration rollout needed safer release gating and validation.",
+            resolution_summary="Use replay eval plus staged rollout gates.",
+            outcome_status=CaseOutcomeStatus.FAILURE if index % 2 == 0 else CaseOutcomeStatus.MIXED,
+            confidence=0.75 + (0.02 * index),
+            impact_score=0.72 + (0.03 * index),
+            first_observed_at=now - timedelta(days=80 - index),
+            last_observed_at=now - timedelta(days=8 + index),
+            source_outcome_ids=[uuid4()] if index < 4 else [],
+            source_pattern_ids=[uuid4()] if index < 3 else [],
+            source_episode_ids=[uuid4()] if index < 2 else [],
+            tags=["checkout", "migration", "rollout", "verification"],
+            created_at=now - timedelta(days=8 + index),
+            updated_at=now - timedelta(days=8 + index),
+        )
+        for index in range(5)
+    ]
+
+    payload = await collect_enrichment_payload(
+        transport,
+        "I am working on checkout migration rollout right now, what should I do?",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert len(payload.memory_cases) == 4
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_proactive_coach_suppresses_weak_signals_below_threshold() -> None:
+    _, _, transport = _build_client_with_transport()
+    now = _utcnow()
+    transport.decision_outcomes = [
+        DecisionOutcome(
+            id=uuid4(),
+            agent_namespace="main",
+            kind=DecisionOutcomeKind.WORKFLOW,
+            title="minor migration hiccup",
+            decision="Tried migration tweaks quickly without full checks.",
+            outcome="Had minor issues but nothing major.",
+            lesson="Double-check edge cases.",
+            outcome_key="auto:outcome:minor-migration",
+            status=DecisionOutcomeStatus.FAILURE,
+            confidence=0.2,
+            importance_score=0.25,
+            event_time=now - timedelta(days=5),
+            tags=["migration"],
+        ),
+    ]
+
+    context = await enrich_context(
+        transport,
+        "how should I approach this migration?",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Proactive coach notes:" in context
+    assert "No immediate risk or leverage signal for this turn." in context
+
+
+@pytest.mark.asyncio
 async def test_enrich_context_week_number_query_targets_requested_week_rollup() -> None:
     _, _, transport = _build_client_with_transport()
     week_32_event_time = datetime.fromisocalendar(2026, 32, 3).replace(tzinfo=timezone.utc)
@@ -2172,6 +2243,8 @@ async def test_enrich_context_emits_trust_ledger_with_source_tags_and_freshness(
     assert "state=" in context
     assert "wording=" in context
     assert "certainty=" in context
+    assert "Trust operations:" in context
+    assert "Trust mix:" in context
     assert "Quote coverage checks:" in context
     assert "quote_status=no-quote-available" in context
 
@@ -2241,3 +2314,39 @@ async def test_enrich_context_quote_coverage_marks_no_quote_when_no_snippet_avai
 
     assert "Quote coverage checks:" in context
     assert "quote_status=no-quote-available" in context
+    assert "Trust operations:" in context
+
+
+@pytest.mark.asyncio
+async def test_enrich_context_trust_ops_warns_on_stale_background_evidence() -> None:
+    _, _, transport = _build_client_with_transport()
+    old_ts = _utcnow() - timedelta(days=120)
+    transport.facts = {
+        str(uuid4()): Fact(
+            id=uuid4(),
+            agent_namespace="main",
+            content="Historical reliability work emphasized replay gates before rollout.",
+            category=FactCategory.PROJECT,
+            confidence=0.93,
+            event_time=old_ts,
+            transaction_time=old_ts,
+            is_active=True,
+            source_episode_ids=[],
+            access_count=2,
+            last_accessed_at=old_ts,
+            tags=["reliability", "rollout"],
+            created_at=old_ts,
+            updated_at=old_ts,
+        )
+    }
+
+    context = await enrich_context(
+        transport,
+        "what old reliability lessons still matter?",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "freshness=stale(>=30d)" in context
+    assert "Trust operations:" in context
+    assert "Treat stale/low-certainty memory as background context until fresh evidence confirms it." in context

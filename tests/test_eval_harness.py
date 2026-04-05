@@ -60,6 +60,7 @@ async def test_run_replay_eval_reports_threshold_failure(tmp_path):
     assert scorecard["overall_score"]["all_metrics_green"] is False
     assert "regression_resilience" in scorecard
     assert "intervention_precision_recall" in scorecard
+    assert "trust_calibration_rate" in scorecard
     assert scorecard["regression_resilience"]["pass_rate"] == 0.5
 
 
@@ -137,6 +138,21 @@ async def test_run_replay_eval_long_horizon_fixture_passes_regression_gate():
         for slot, score in slot_scores.items():
             assert score["required"] >= 1
             assert score["pass_rate"] == 1.0, f"slot={slot} score={score}"
+
+
+@pytest.mark.asyncio
+async def test_run_replay_eval_trust_adversarial_fixture_passes_regression_gate():
+    report = await run_replay_eval(
+        scenarios_file="tests/fixtures/replay_eval_trust_adversarial_scenarios.json",
+        min_pass_rate=1.0,
+    )
+
+    assert report["total"] >= 4
+    assert report["failed"] == 0
+    assert report["meets_threshold"] is True
+    scorecard = report["universal_outcome_scorecard"]
+    assert scorecard["trust_calibration_rate"]["required"] >= 1
+    assert scorecard["trust_calibration_rate"]["pass_rate"] == 1.0
 
 
 @pytest.mark.asyncio

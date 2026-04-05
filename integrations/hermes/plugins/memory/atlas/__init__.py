@@ -316,26 +316,6 @@ class AtlasMemoryProvider(MemoryProvider):
                 "default": "https://YOUR_PROJECT.supabase.co",
             },
             {
-                "key": "supabase_schema",
-                "description": "Database schema for Atlas memory",
-                "default": "memory",
-            },
-            {
-                "key": "openai_base_url",
-                "description": "Embeddings base URL",
-                "default": "https://api.openai.com/v1",
-            },
-            {
-                "key": "embedding_model",
-                "description": "Embedding model",
-                "default": "text-embedding-3-small",
-            },
-            {
-                "key": "embedding_dimensions",
-                "description": "Embedding dimensions",
-                "default": "512",
-            },
-            {
                 "key": "supabase_key",
                 "description": "Supabase service key",
                 "secret": True,
@@ -344,10 +324,15 @@ class AtlasMemoryProvider(MemoryProvider):
             },
             {
                 "key": "openai_api_key",
-                "description": "Embeddings API key (optional)",
+                "description": "Embedding model API key",
                 "secret": True,
-                "required": False,
+                "required": True,
                 "env_var": "MEMORY_OPENAI_API_KEY",
+            },
+            {
+                "key": "llm_model",
+                "description": "LLM model choice",
+                "default": "gpt-5.3-codex",
             },
         ]
 

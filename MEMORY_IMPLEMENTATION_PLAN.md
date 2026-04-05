@@ -294,6 +294,11 @@ Important:
 - forget / revoke / override UX
 - stronger uncertainty surfacing
 
+Status update (2026-04-05): trust-ops polish completed in retrieval output + eval scoring.
+- enrichment now emits explicit `Trust operations` guidance derived from trust-ledger certainty/freshness and quote coverage posture
+- replay eval now measures `trust_calibration_rate` in the universal outcome scorecard
+- adversarial trust/calibration fixture added and included in synthetic months benchmark gate
+
 ### Deferred Workstreams
 
 - full graph indexing complexity before retrieval core maturity
@@ -396,6 +401,11 @@ Important:
   - LLM choice defaults to Hermes `~/.hermes/config.yaml` (`model.default`) when available
   - selected LLM is written to `MEMORY_LLM_MODEL` and used by summary generation when enabled
 - validation: targeted changed-suite `122 passed`; atlas full suite `214 passed, 10 skipped`
+- trust ops + migration hygiene completion pass (this session):
+  - trust output now includes explicit `Trust operations` section for confidence/freshness/grounding posture
+  - replay eval scorecard now includes `trust_calibration_rate` and tracks trust-op diagnostics per scenario
+  - added `tests/fixtures/replay_eval_trust_adversarial_scenarios.json` and wired dedicated + synthetic benchmark coverage
+  - added `2026-04-05_migration_hygiene_cleanup.sql` to reassert canonical `memory.search_episodes` and retire residual compatibility surfaces/signatures idempotently
 
 
 ## Evaluation and Quality Gates

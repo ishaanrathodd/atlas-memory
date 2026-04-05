@@ -41,7 +41,9 @@ def test_atlas_provider_config_schema_contains_setup_fields() -> None:
 
     assert "supabase_url" in keys
     assert "supabase_key" in keys
-    assert "supabase_schema" in keys
+    assert "openai_api_key" in keys
+    assert "llm_model" in keys
+    assert "supabase_schema" not in keys
 
 
 def test_atlas_provider_save_config_writes_profile_scoped_json(tmp_path: Path) -> None:
@@ -50,15 +52,14 @@ def test_atlas_provider_save_config_writes_profile_scoped_json(tmp_path: Path) -
     provider.save_config(
         {
             "supabase_url": "https://example.supabase.co",
-            "supabase_schema": "memory",
-            "embedding_model": "text-embedding-3-small",
+            "llm_model": "gpt-5.3-codex",
         },
         str(tmp_path),
     )
 
     payload = json.loads((tmp_path / "atlas.json").read_text(encoding="utf-8"))
     assert payload["supabase_url"] == "https://example.supabase.co"
-    assert payload["supabase_schema"] == "memory"
+    assert payload["llm_model"] == "gpt-5.3-codex"
 
 
 def test_atlas_provider_system_prompt_guides_model_to_use_recalled_memory() -> None:

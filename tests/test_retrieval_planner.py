@@ -46,6 +46,38 @@ def test_build_retrieval_plan_timeline_query_expands_temporal_route() -> None:
     assert plan.route_weight("temporal") > plan.route_weight("semantic")
 
 
+def test_build_retrieval_plan_advice_query_enables_outcome_aware_case_routes() -> None:
+    plan = build_retrieval_plan(
+        signals=RetrievalSignals(advice_query=True),
+        default_relevant_episode_limit=12,
+        default_recent_episode_limit=3,
+        default_timeline_fetch_limit=12,
+        exact_relevant_episode_limit=24,
+        exact_recent_episode_limit=24,
+    )
+
+    assert plan.route_weight("analogous_case") > 0.0
+    assert plan.route_weight("outcome_aware") > 0.0
+    assert plan.case_fetch_limit == 36
+    assert plan.analogous_case_limit == 4
+    assert plan.proactive_trigger_threshold < 0.65
+    assert plan.proactive_min_overlap == 1
+
+
+def test_build_retrieval_plan_continuity_query_expands_recent_window() -> None:
+    plan = build_retrieval_plan(
+        signals=RetrievalSignals(continuity_query=True),
+        default_relevant_episode_limit=12,
+        default_recent_episode_limit=3,
+        default_timeline_fetch_limit=12,
+        exact_relevant_episode_limit=24,
+        exact_recent_episode_limit=24,
+    )
+
+    assert plan.recent_episode_limit >= 5
+    assert plan.route_weight("temporal") >= 0.9
+
+
 @dataclass(frozen=True)
 class _EpisodeCandidate:
     text: str

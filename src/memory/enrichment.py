@@ -880,6 +880,7 @@ class EnrichmentPayload:
     exact_recall_mode: bool = False
     retrieval_evidence_lines: list[str] = field(default_factory=list)
     trust_ledger_lines: list[str] = field(default_factory=list)
+    trust_ops_lines: list[str] = field(default_factory=list)
     verbatim_evidence_lines: list[str] = field(default_factory=list)
     quote_coverage_lines: list[str] = field(default_factory=list)
 
@@ -896,6 +897,7 @@ class EnrichmentPayload:
             ),
             _format_retrieval_evidence(self.retrieval_evidence_lines),
             _format_trust_ledger(self.trust_ledger_lines),
+            _format_trust_ops(self.trust_ops_lines),
             _format_verbatim_evidence(self.verbatim_evidence_lines),
             _format_quote_coverage(self.quote_coverage_lines),
             _format_always_on_identity(self.always_on_identity_lines),
@@ -928,6 +930,12 @@ def _format_trust_ledger(lines: list[str]) -> str:
     if not lines:
         return "Trust ledger (source tags + freshness):\n- No durable evidence surfaced for this turn."
     return "Trust ledger (source tags + freshness):\n" + "\n".join(f"- {_normalize_text(line, max_length=360)}" for line in lines)
+
+
+def _format_trust_ops(lines: list[str]) -> str:
+    if not lines:
+        return "Trust operations:\n- Trust posture neutral; continue grounding claims in durable evidence."
+    return "Trust operations:\n" + "\n".join(f"- {_normalize_text(line, max_length=360)}" for line in lines)
 
 
 def _format_verbatim_evidence(lines: list[str]) -> str:
@@ -1749,6 +1757,73 @@ def _build_quote_coverage_lines(
     return lines
 
 
+def _build_trust_ops_lines(
+    *,
+    trust_ledger_lines: list[str],
+    quote_coverage_lines: list[str],
+) -> list[str]:
+    if not trust_ledger_lines and not quote_coverage_lines:
+        return []
+
+    high_certainty = 0
+    medium_certainty = 0
+    low_certainty = 0
+    stale_sources = 0
+    high_stale_sources = 0
+    quote_backed = 0
+    quote_missing = 0
+
+    for line in trust_ledger_lines:
+        lowered = line.lower()
+        if "certainty=high" in lowered:
+            high_certainty += 1
+            if "freshness=stale(>=30d)" in lowered:
+                high_stale_sources += 1
+        elif "certainty=medium" in lowered:
+            medium_certainty += 1
+        elif "certainty=low" in lowered:
+            low_certainty += 1
+        if "freshness=stale(>=30d)" in lowered:
+            stale_sources += 1
+
+    for line in quote_coverage_lines:
+        lowered = line.lower()
+        if "quote_status=quote-backed" in lowered:
+            quote_backed += 1
+        if "quote_status=no-quote-available" in lowered:
+            quote_missing += 1
+
+    lines: list[str] = []
+    lines.append(
+        "Trust mix: "
+        f"high={high_certainty}, medium={medium_certainty}, low={low_certainty}, stale={stale_sources}."
+    )
+
+    if high_stale_sources > 0:
+        lines.append("Calibration alert: high-certainty stale evidence detected; re-verify before acting.")
+    elif stale_sources > 0 or low_certainty > 0:
+        lines.append("Treat stale/low-certainty memory as background context until fresh evidence confirms it.")
+    else:
+        lines.append("Calibration healthy: surfaced evidence is fresh enough for direct action.")
+
+    if quote_backed > 0 and quote_missing == 0:
+        lines.append("Grounding posture: quote-backed evidence available for all recalled claim sections.")
+    elif quote_backed > 0 and quote_missing > 0:
+        lines.append("Grounding posture: mixed quote coverage; quote-backed for some claims, tentative for others.")
+    else:
+        lines.append("Grounding posture: no quote-backed snippets; avoid over-precise claim wording.")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        normalized = " ".join(line.lower().split())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(line)
+    return deduped[:4]
+
+
 def _extract_requested_iso_week(value: str) -> tuple[int, int] | None:
     lowered = (value or "").lower()
     week_match = _WEEK_QUERY_RE.search(lowered)
@@ -2132,6 +2207,11 @@ def _memory_case_query_overlap_score(case: MemoryCase, query_tokens: set[str]) -
     return min(1.0, float(overlap) / float(max(1, len(query_tokens))))
 
 
+def _memory_case_overlap_count(case: MemoryCase, query_tokens: set[str]) -> int:
+    case_tokens = _tokenize(" ".join([case.problem_statement, case.resolution_summary or "", " ".join(case.tags)]))
+    return _token_overlap_count(query_tokens, case_tokens)
+
+
 def _memory_case_evidence_signal(case: MemoryCase) -> float:
     evidence_count = len(case.source_outcome_ids) + len(case.source_pattern_ids) + len(case.source_episode_ids)
     return min(1.0, float(evidence_count) / 5.0)
@@ -2186,14 +2266,18 @@ def _build_proactive_coach_lines(
     query_tokens: set[str],
     ranked_decision_outcomes: list[DecisionOutcome],
     ranked_patterns: list[Pattern],
+    trigger_threshold: float,
+    min_overlap: int,
 ) -> list[str]:
     lines: list[str] = []
+    query_token_count = max(1, len(query_tokens))
 
     risk_outcomes = [
         outcome
         for outcome in ranked_decision_outcomes
         if outcome.status in {DecisionOutcomeStatus.FAILURE, DecisionOutcomeStatus.MIXED}
-        if _decision_outcome_overlap(outcome, query_tokens) > 0
+        if _decision_outcome_overlap(outcome, query_tokens) >= min_overlap
+        or (float(outcome.importance_score) >= 0.9 and float(outcome.confidence) >= 0.85)
     ]
     if risk_outcomes:
         risk = risk_outcomes[0]
@@ -2206,7 +2290,7 @@ def _build_proactive_coach_lines(
         pattern
         for pattern in ranked_patterns
         if pattern.pattern_type in {PatternType.TRAP, PatternType.EMOTIONAL_PATTERN, PatternType.WORK_PATTERN}
-        if _pattern_overlap(pattern, query_tokens) > 0 or float(pattern.impact_score) >= 0.8
+        if _pattern_overlap(pattern, query_tokens) >= min_overlap or float(pattern.impact_score) >= 0.85
     ]
     if trap_patterns:
         trap = trap_patterns[0]
@@ -2216,7 +2300,7 @@ def _build_proactive_coach_lines(
         outcome
         for outcome in ranked_decision_outcomes
         if outcome.status == DecisionOutcomeStatus.SUCCESS
-        if _decision_outcome_overlap(outcome, query_tokens) > 0
+        if _decision_outcome_overlap(outcome, query_tokens) >= min_overlap
     ]
     if not win_outcomes:
         win_outcomes = [
@@ -2237,15 +2321,20 @@ def _build_proactive_coach_lines(
     signal_score = 0.0
     if risk_outcomes:
         risk = risk_outcomes[0]
-        signal_score += min(0.5, 0.2 + (0.3 * min(1.0, float(risk.confidence))))
+        risk_overlap_ratio = min(1.0, float(_decision_outcome_overlap(risk, query_tokens)) / float(query_token_count))
+        signal_score += min(0.55, 0.18 + (0.25 * min(1.0, float(risk.confidence))) + (0.12 * risk_overlap_ratio))
     if trap_patterns:
         trap = trap_patterns[0]
-        signal_score += min(0.3, 0.1 + (0.2 * min(1.0, float(trap.impact_score))))
+        trap_overlap_ratio = min(1.0, float(_pattern_overlap(trap, query_tokens)) / float(query_token_count))
+        signal_score += min(0.3, 0.08 + (0.17 * min(1.0, float(trap.impact_score))) + (0.05 * trap_overlap_ratio))
     if win_outcomes:
         win = win_outcomes[0]
-        signal_score += min(0.25, 0.1 + (0.15 * min(1.0, float(win.confidence))))
+        win_overlap_ratio = min(1.0, float(_decision_outcome_overlap(win, query_tokens)) / float(query_token_count))
+        signal_score += min(0.28, 0.08 + (0.14 * min(1.0, float(win.confidence))) + (0.06 * win_overlap_ratio))
 
     if not lines:
+        return []
+    if signal_score < max(0.0, float(trigger_threshold)):
         return []
 
     lines.insert(
@@ -2582,7 +2671,7 @@ async def collect_enrichment_payload(
     list_memory_cases = getattr(transport, "list_memory_cases", None)
     if callable(list_memory_cases):
         memory_cases_task = list_memory_cases(
-            limit=24,
+            limit=retrieval_plan.case_fetch_limit,
             agent_namespace=agent_namespace,
             outcome_statuses=[
                 DecisionOutcomeStatus.SUCCESS.value,
@@ -2881,8 +2970,9 @@ async def collect_enrichment_payload(
         filtered_memory_cases = [
             case
             for case in ranked_memory_cases
-            if _memory_case_query_overlap_score(case, query_tokens) > 0.0
-        ][:3]
+            if _memory_case_overlap_count(case, query_tokens) >= retrieval_plan.proactive_min_overlap
+            or _memory_case_query_overlap_score(case, query_tokens) >= 0.2
+        ][: max(1, retrieval_plan.analogous_case_limit)]
     else:
         filtered_memory_cases = []
 
@@ -2915,7 +3005,12 @@ async def collect_enrichment_payload(
         key=lambda outcome: (
             (2.5 if outcome.id is not None and str(outcome.id) in case_outcome_ids else 0.0)
             + (0.4 if case_tags.intersection({str(tag).lower() for tag in outcome.tags}) else 0.0),
-            _decision_outcome_relevance_score(outcome, query_tokens),
+            _decision_outcome_relevance_score(outcome, query_tokens)
+            + (
+                retrieval_plan.route_weight("outcome_aware", default=0.0)
+                * float(outcome.importance_score)
+                * (1.0 if _decision_outcome_overlap(outcome, query_tokens) > 0 else 0.35)
+            ),
             _sort_datetime(outcome.event_time),
         ),
         reverse=True,
@@ -3013,6 +3108,8 @@ async def collect_enrichment_payload(
             query_tokens=query_tokens,
             ranked_decision_outcomes=ranked_decision_outcomes,
             ranked_patterns=ranked_patterns,
+            trigger_threshold=retrieval_plan.proactive_trigger_threshold,
+            min_overlap=retrieval_plan.proactive_min_overlap,
         )
         if not low_signal_query and (proactive_coaching_query or advice_query or commitments_query)
         else []
@@ -3106,6 +3203,10 @@ async def collect_enrichment_payload(
         relevant_episodes=ranked_relevant_episodes,
         recent_episodes=filtered_recent_episodes,
     )
+    trust_ops_lines = _build_trust_ops_lines(
+        trust_ledger_lines=trust_ledger_lines,
+        quote_coverage_lines=quote_coverage_lines,
+    )
 
     return EnrichmentPayload(
         facts=ranked_facts,
@@ -3129,6 +3230,7 @@ async def collect_enrichment_payload(
         exact_recall_mode=exact_recall_query,
         retrieval_evidence_lines=retrieval_evidence_lines,
         trust_ledger_lines=trust_ledger_lines,
+        trust_ops_lines=trust_ops_lines,
         verbatim_evidence_lines=verbatim_evidence_lines,
         quote_coverage_lines=quote_coverage_lines,
     )

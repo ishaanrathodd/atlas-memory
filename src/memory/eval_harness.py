@@ -68,6 +68,10 @@ _OUTCOME_GROUNDED_MIN_COUNT_KEYS = {
     "patterns",
     "proactive_coach_lines",
 }
+_TRUST_CALIBRATION_MIN_COUNT_KEYS = {
+    "trust_ledger_lines",
+    "quote_coverage_lines",
+}
 _TEMPORAL_SIGNAL_KEYS = {
     "created_at",
     "updated_at",
@@ -373,6 +377,35 @@ def _scenario_has_temporal_signal(scenario: ReplayScenario) -> bool:
     return has_sequence or has_lifecycle_expectation
 
 
+def _scenario_expects_quote_status(scenario: ReplayScenario, status: str) -> bool:
+    marker = f"quote_status={status}".lower()
+    return any(marker in str(expected).lower() for expected in scenario.expect_contains)
+
+
+def _trust_ops_diagnostics(*, trust_ledger_lines: list[str], quote_coverage_lines: list[str]) -> dict[str, int]:
+    high_certainty_stale_sources = 0
+    quote_backed_sections = 0
+    quote_missing_sections = 0
+
+    for line in trust_ledger_lines:
+        lowered = str(line).lower()
+        if "certainty=high" in lowered and "freshness=stale(>=30d)" in lowered:
+            high_certainty_stale_sources += 1
+
+    for line in quote_coverage_lines:
+        lowered = str(line).lower()
+        if "quote_status=quote-backed" in lowered:
+            quote_backed_sections += 1
+        if "quote_status=no-quote-available" in lowered:
+            quote_missing_sections += 1
+
+    return {
+        "high_certainty_stale_sources": int(high_certainty_stale_sources),
+        "quote_backed_sections": int(quote_backed_sections),
+        "quote_missing_sections": int(quote_missing_sections),
+    }
+
+
 def _build_universal_outcome_scorecard(
     scenarios: list[ReplayScenario],
     results: list[dict[str, Any]],
@@ -423,10 +456,34 @@ def _build_universal_outcome_scorecard(
     }
     proactive_true_positive = proactive_required.intersection(proactive_emitted)
 
+    trust_required = {
+        scenario.id
+        for scenario in scenarios
+        if _scenario_requires_min_count(scenario, _TRUST_CALIBRATION_MIN_COUNT_KEYS)
+    }
+    trust_passed = 0
+    for scenario_id in trust_required:
+        scenario = next((item for item in scenarios if item.id == scenario_id), None)
+        result = result_by_id.get(scenario_id) or {}
+        trust_ops = result.get("trust_ops") or {}
+        no_high_stale = int(trust_ops.get("high_certainty_stale_sources", 0)) == 0
+        quote_backed_sections = int(trust_ops.get("quote_backed_sections", 0))
+        quote_missing_sections = int(trust_ops.get("quote_missing_sections", 0))
+
+        quote_expectation_pass = True
+        if scenario is not None and _scenario_expects_quote_status(scenario, "quote-backed"):
+            quote_expectation_pass = quote_backed_sections > 0
+        elif scenario is not None and _scenario_expects_quote_status(scenario, "no-quote-available"):
+            quote_expectation_pass = quote_missing_sections > 0
+
+        if bool(result.get("passed")) and no_high_stale and quote_expectation_pass:
+            trust_passed += 1
+
     continuity_required_count, continuity_passed = _bucket(continuity_required)
     alignment_required_count, alignment_passed = _bucket(alignment_required)
     outcome_required_count, outcome_passed = _bucket(outcome_required)
     adaptation_required_count, adaptation_passed = _bucket(adaptation_required)
+    trust_required_count = len(trust_required)
 
     def _rate(passed_count: int, required_count: int) -> float:
         if required_count <= 0:
@@ -437,6 +494,7 @@ def _build_universal_outcome_scorecard(
     alignment_rate = _rate(alignment_passed, alignment_required_count)
     outcome_rate = _rate(outcome_passed, outcome_required_count)
     adaptation_rate = _rate(adaptation_passed, adaptation_required_count)
+    trust_rate = _rate(trust_passed, trust_required_count)
 
     total = len(results)
     passed = sum(1 for item in results if item.get("passed"))
@@ -482,6 +540,11 @@ def _build_universal_outcome_scorecard(
                 6,
             ),
         },
+        "trust_calibration_rate": {
+            "required": trust_required_count,
+            "passed": trust_passed,
+            "pass_rate": trust_rate,
+        },
         "regression_resilience": {
             "required": total,
             "passed": passed,
@@ -496,6 +559,7 @@ def _build_universal_outcome_scorecard(
         alignment_rate,
         outcome_rate,
         adaptation_rate,
+        trust_rate,
         regression_rate,
     ]
     metrics_below_threshold = {
@@ -957,6 +1021,7 @@ async def evaluate_replay_scenario(scenario: ReplayScenario) -> dict[str, Any]:
         "reflections": len(payload.reflections),
         "timeline_events": len(payload.timeline_events),
         "commitments": len(payload.commitments),
+        "trust_ledger_lines": len(payload.trust_ledger_lines),
         "active_state_lines": len(payload.active_state_lines),
         "always_on_identity_lines": len(payload.always_on_identity_lines),
         "core_profile_lines": len(payload.core_profile_lines),
@@ -983,6 +1048,10 @@ async def evaluate_replay_scenario(scenario: ReplayScenario) -> dict[str, Any]:
         )
 
     failed = [check for check in checks if not check.get("passed")]
+    trust_ops = _trust_ops_diagnostics(
+        trust_ledger_lines=payload.trust_ledger_lines,
+        quote_coverage_lines=payload.quote_coverage_lines,
+    )
     return {
         "scenario_id": scenario.id,
         "description": scenario.description,
@@ -995,6 +1064,7 @@ async def evaluate_replay_scenario(scenario: ReplayScenario) -> dict[str, Any]:
             slot: sorted(states)
             for slot, states in observed_identity_slot_states.items()
         },
+        "trust_ops": trust_ops,
     }
 
 
