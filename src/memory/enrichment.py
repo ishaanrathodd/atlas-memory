@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Sequence
 
-from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, MemoryCase, Pattern, PatternType, Reflection, ReflectionStatus, Session, SessionHandoff, TimelineEvent
-from memory.retrieval_planner import RetrievalSignals, build_retrieval_plan, rerank_items_first_pass
+from memory.models import ActiveState, CaseOutcomeStatus, Commitment, Correction, DecisionOutcome, DecisionOutcomeStatus, Directive, Episode, EpisodeRole, Fact, FactCategory, MemoryCase, Pattern, PatternType, Reflection, ReflectionStatus, Session, SessionHandoff, TimelineEvent
+from memory.retrieval_planner import RetrievalSignals, build_retrieval_plan, rerank_items_first_pass, rerank_items_second_pass
 from memory.transport import (
     MemoryTransport,
     _looks_like_operational_content,
@@ -1609,6 +1609,14 @@ def _fact_currentness_label(fact: Fact) -> str:
     return _currentness_label(observed, current_hours=24 * 7)
 
 
+def _certainty_label(*, confidence: float, freshness: str) -> str:
+    if confidence >= 0.85 and freshness != "stale(>=30d)":
+        return "high"
+    if confidence >= 0.7:
+        return "medium"
+    return "low"
+
+
 def _verbatim_clip(value: str, *, max_length: int = 260) -> str:
     raw = (value or "").strip().replace("\n", "\\n")
     if not raw:
@@ -1636,8 +1644,9 @@ def _build_trust_ledger_lines(
 
     for fact in facts[:2]:
         observed = fact.updated_at or fact.created_at
+        freshness = _freshness_label(observed)
         lines.append(
-            f"[source:fact] category={fact.category.value} confidence={float(fact.confidence):.2f} observed={observed.isoformat() if observed else 'unknown'} freshness={_freshness_label(observed)} state={_fact_currentness_label(fact)} wording=derived"
+            f"[source:fact] category={fact.category.value} confidence={float(fact.confidence):.2f} certainty={_certainty_label(confidence=float(fact.confidence), freshness=freshness)} observed={observed.isoformat() if observed else 'unknown'} freshness={freshness} state={_fact_currentness_label(fact)} wording=derived"
         )
 
     for event in timeline_events[:1]:
@@ -1646,18 +1655,21 @@ def _build_trust_ledger_lines(
         )
 
     for outcome in decision_outcomes[:1]:
+        freshness = _freshness_label(outcome.event_time)
         lines.append(
-            f"[source:outcome] status={outcome.status.value} confidence={float(outcome.confidence):.2f} event_time={outcome.event_time.isoformat()} freshness={_freshness_label(outcome.event_time)} state={_currentness_label(outcome.event_time, current_hours=24 * 14)} wording=derived"
+            f"[source:outcome] status={outcome.status.value} confidence={float(outcome.confidence):.2f} certainty={_certainty_label(confidence=float(outcome.confidence), freshness=freshness)} event_time={outcome.event_time.isoformat()} freshness={freshness} state={_currentness_label(outcome.event_time, current_hours=24 * 14)} wording=derived"
         )
 
     for pattern in patterns[:1]:
+        freshness = _freshness_label(pattern.last_observed_at)
         lines.append(
-            f"[source:pattern] type={pattern.pattern_type.value} confidence={float(pattern.confidence):.2f} last_observed={pattern.last_observed_at.isoformat()} freshness={_freshness_label(pattern.last_observed_at)} state={_currentness_label(pattern.last_observed_at, current_hours=24 * 30)} wording=derived"
+            f"[source:pattern] type={pattern.pattern_type.value} confidence={float(pattern.confidence):.2f} certainty={_certainty_label(confidence=float(pattern.confidence), freshness=freshness)} last_observed={pattern.last_observed_at.isoformat()} freshness={freshness} state={_currentness_label(pattern.last_observed_at, current_hours=24 * 30)} wording=derived"
         )
 
     for reflection in reflections[:1]:
+        freshness = _freshness_label(reflection.last_observed_at)
         lines.append(
-            f"[source:reflection] status={reflection.status.value} confidence={float(reflection.confidence):.2f} last_observed={reflection.last_observed_at.isoformat()} freshness={_freshness_label(reflection.last_observed_at)} state={_currentness_label(reflection.last_observed_at, current_hours=24 * 30)} wording=derived"
+            f"[source:reflection] status={reflection.status.value} confidence={float(reflection.confidence):.2f} certainty={_certainty_label(confidence=float(reflection.confidence), freshness=freshness)} last_observed={reflection.last_observed_at.isoformat()} freshness={freshness} state={_currentness_label(reflection.last_observed_at, current_hours=24 * 30)} wording=derived"
         )
 
     deduped: list[str] = []
@@ -2112,6 +2124,41 @@ def _build_life_trajectory_lines(events: list[TimelineEvent]) -> list[str]:
     return lines
 
 
+def _memory_case_query_overlap_score(case: MemoryCase, query_tokens: set[str]) -> float:
+    case_tokens = _tokenize(" ".join([case.problem_statement, case.resolution_summary or "", " ".join(case.tags)]))
+    if not query_tokens:
+        return 0.0
+    overlap = _token_overlap_count(query_tokens, case_tokens)
+    return min(1.0, float(overlap) / float(max(1, len(query_tokens))))
+
+
+def _memory_case_evidence_signal(case: MemoryCase) -> float:
+    evidence_count = len(case.source_outcome_ids) + len(case.source_pattern_ids) + len(case.source_episode_ids)
+    return min(1.0, float(evidence_count) / 5.0)
+
+
+def _memory_case_outcome_signal(case: MemoryCase) -> float:
+    status_bonus = {
+        CaseOutcomeStatus.FAILURE: 1.0,
+        CaseOutcomeStatus.MIXED: 0.8,
+        CaseOutcomeStatus.SUCCESS: 0.65,
+    }.get(case.outcome_status, 0.4)
+    has_resolution = 0.2 if bool((case.resolution_summary or "").strip()) else 0.0
+    return min(1.2, status_bonus + has_resolution)
+
+
+def _memory_case_confidence_signal(case: MemoryCase) -> float:
+    return min(1.0, (float(case.confidence) * 0.55) + (float(case.impact_score) * 0.45))
+
+
+def _proactive_confidence_label(score: float) -> str:
+    if score >= 0.85:
+        return "high"
+    if score >= 0.65:
+        return "medium"
+    return "low"
+
+
 def _query_needs_proactive_coaching(value: str) -> bool:
     lowered = (value or "").lower()
     markers = (
@@ -2171,10 +2218,40 @@ def _build_proactive_coach_lines(
         if outcome.status == DecisionOutcomeStatus.SUCCESS
         if _decision_outcome_overlap(outcome, query_tokens) > 0
     ]
+    if not win_outcomes:
+        win_outcomes = [
+            outcome
+            for outcome in ranked_decision_outcomes
+            if outcome.status == DecisionOutcomeStatus.SUCCESS
+        ]
     if win_outcomes:
         win = win_outcomes[0]
         win_lesson = win.lesson if win.lesson and win.lesson not in _LOW_VALUE_DECISION_OUTCOME_LESSONS else win.outcome
         lines.append(f"Proven better path: {_normalize_text(win_lesson or win.outcome, max_length=220)}")
+    elif risk_outcomes:
+        risk = risk_outcomes[0]
+        fallback = risk.lesson if risk.lesson and risk.lesson not in _LOW_VALUE_DECISION_OUTCOME_LESSONS else risk.outcome
+        if fallback:
+            lines.append(f"Proven better path: {_normalize_text(fallback, max_length=220)}")
+
+    signal_score = 0.0
+    if risk_outcomes:
+        risk = risk_outcomes[0]
+        signal_score += min(0.5, 0.2 + (0.3 * min(1.0, float(risk.confidence))))
+    if trap_patterns:
+        trap = trap_patterns[0]
+        signal_score += min(0.3, 0.1 + (0.2 * min(1.0, float(trap.impact_score))))
+    if win_outcomes:
+        win = win_outcomes[0]
+        signal_score += min(0.25, 0.1 + (0.15 * min(1.0, float(win.confidence))))
+
+    if not lines:
+        return []
+
+    lines.insert(
+        0,
+        f"Trigger confidence: {_proactive_confidence_label(signal_score)} (score={signal_score:.2f}) based on prior risks/wins.",
+    )
 
     deduped: list[str] = []
     seen: set[str] = set()
@@ -2184,7 +2261,7 @@ def _build_proactive_coach_lines(
             continue
         seen.add(normalized)
         deduped.append(line)
-    return deduped[:3]
+    return deduped[:4]
 
 
 def _build_retrieval_evidence_lines(
@@ -2767,7 +2844,7 @@ async def collect_enrichment_payload(
         filtered_timeline_events = ranked_timeline_events[:MAX_TIMELINE_EVENTS_IN_CONTEXT]
 
     if retrieval_plan.route_weight("analogous_case", default=0.0) > 0.0:
-        ranked_memory_cases = rerank_items_first_pass(
+        first_pass_memory_cases = rerank_items_first_pass(
             [
                 case
                 for case in memory_cases
@@ -2785,14 +2862,26 @@ async def collect_enrichment_payload(
             lexical_weight=retrieval_plan.route_weight("lexical", default=0.0),
             temporal_weight=retrieval_plan.route_weight("temporal", default=0.0),
         )
+        first_pass_index = {
+            str(case.id): idx
+            for idx, case in enumerate(first_pass_memory_cases)
+            if case.id is not None
+        }
+        ranked_memory_cases = rerank_items_second_pass(
+            first_pass_memory_cases,
+            first_pass_rank=lambda case: first_pass_index.get(str(case.id), len(first_pass_memory_cases)),
+            outcome_signal=_memory_case_outcome_signal,
+            evidence_signal=_memory_case_evidence_signal,
+            confidence_signal=_memory_case_confidence_signal,
+            first_pass_weight=0.6,
+            outcome_weight=0.9,
+            evidence_weight=0.55,
+            confidence_weight=0.45,
+        )
         filtered_memory_cases = [
             case
             for case in ranked_memory_cases
-            if _token_overlap_count(
-                query_tokens,
-                _tokenize(" ".join([case.problem_statement, case.resolution_summary or "", " ".join(case.tags)])),
-            )
-            > 0
+            if _memory_case_query_overlap_score(case, query_tokens) > 0.0
         ][:3]
     else:
         filtered_memory_cases = []

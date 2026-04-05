@@ -19,6 +19,9 @@ dependencies = [
   "numpy>=1.26.0,<3.0.0",
 ]
 
+[project.scripts]
+memory-curator = "memory.curator_runtime:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.2.0,<9.0.0",

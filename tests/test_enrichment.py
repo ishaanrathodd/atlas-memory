@@ -1990,6 +1990,81 @@ async def test_enrich_context_surfaces_analogous_memory_cases_for_advice_queries
 
 
 @pytest.mark.asyncio
+async def test_enrich_context_analogous_case_second_pass_prefers_evidence_rich_failures() -> None:
+    _, _, transport = _build_client_with_transport()
+    now = _utcnow()
+    linked_outcome_id = uuid4()
+
+    transport.decision_outcomes = [
+        DecisionOutcome(
+            id=linked_outcome_id,
+            agent_namespace="main",
+            kind=DecisionOutcomeKind.WORKFLOW,
+            title="checkout migration failure",
+            decision="Rushed checkout migration rollout without verification gates.",
+            outcome="Production regressions and rework consumed two days.",
+            lesson="Ship with replay-eval and CI regression gates before full rollout.",
+            outcome_key="auto:outcome:checkout-failure",
+            status=DecisionOutcomeStatus.FAILURE,
+            confidence=0.95,
+            importance_score=0.95,
+            event_time=now - timedelta(days=20),
+            tags=["checkout", "migration", "rollout"],
+        ),
+    ]
+    transport.memory_cases = [
+        MemoryCase(
+            id=uuid4(),
+            agent_namespace="main",
+            case_key="auto:case:generic-checklist",
+            title="Generic migration checklist",
+            problem_statement="Checkout migration checklist with broad steps.",
+            resolution_summary="Follow the default checklist.",
+            outcome_status=CaseOutcomeStatus.SUCCESS,
+            confidence=0.62,
+            impact_score=0.42,
+            first_observed_at=now - timedelta(days=80),
+            last_observed_at=now - timedelta(days=3),
+            source_outcome_ids=[],
+            source_pattern_ids=[],
+            source_episode_ids=[],
+            tags=["checkout", "migration", "rollout"],
+            created_at=now - timedelta(days=3),
+            updated_at=now - timedelta(days=3),
+        ),
+        MemoryCase(
+            id=uuid4(),
+            agent_namespace="main",
+            case_key="auto:case:checkout-rollout",
+            title="Checkout rollout without safety gates",
+            problem_statement="Checkout migration rollout moved too fast without verification gates.",
+            resolution_summary="Start with replay eval and canary gating before broad rollout.",
+            outcome_status=CaseOutcomeStatus.FAILURE,
+            confidence=0.9,
+            impact_score=0.92,
+            first_observed_at=now - timedelta(days=60),
+            last_observed_at=now - timedelta(days=10),
+            source_outcome_ids=[linked_outcome_id],
+            source_pattern_ids=[],
+            source_episode_ids=[uuid4()],
+            tags=["checkout", "migration", "rollout", "verification"],
+            created_at=now - timedelta(days=10),
+            updated_at=now - timedelta(days=10),
+        ),
+    ]
+
+    context = await enrich_context(
+        transport,
+        "I am working on checkout migration rollout right now, what should I do?",
+        platform="local",
+        agent_namespace="main",
+    )
+
+    assert "Analogous past cases:" in context
+    assert context.index("Checkout rollout without safety gates") < context.index("Generic migration checklist")
+
+
+@pytest.mark.asyncio
 async def test_enrich_context_week_number_query_targets_requested_week_rollup() -> None:
     _, _, transport = _build_client_with_transport()
     week_32_event_time = datetime.fromisocalendar(2026, 32, 3).replace(tzinfo=timezone.utc)
@@ -2096,6 +2171,7 @@ async def test_enrich_context_emits_trust_ledger_with_source_tags_and_freshness(
     assert "freshness=" in context
     assert "state=" in context
     assert "wording=" in context
+    assert "certainty=" in context
     assert "Quote coverage checks:" in context
     assert "quote_status=no-quote-available" in context
 

@@ -118,6 +118,11 @@ Example:
 ```bash
 python -m memory.curator_runtime process-memory
 python -m memory.curator_runtime stats
+python -m memory.curator_runtime setup-diagnostics
+
+# installed entrypoint (same runtime)
+memory-curator process-memory
+memory-curator setup-diagnostics
 ```
 
 Use for:

@@ -411,6 +411,18 @@ def _build_universal_outcome_scorecard(
         if _scenario_has_temporal_signal(scenario)
     }
 
+    proactive_required = {
+        scenario.id
+        for scenario in scenarios
+        if int(scenario.min_counts.get("proactive_coach_lines", 0)) > 0
+    }
+    proactive_emitted = {
+        str(item.get("scenario_id"))
+        for item in results
+        if int((item.get("counts") or {}).get("proactive_coach_lines", 0)) > 0
+    }
+    proactive_true_positive = proactive_required.intersection(proactive_emitted)
+
     continuity_required_count, continuity_passed = _bucket(continuity_required)
     alignment_required_count, alignment_passed = _bucket(alignment_required)
     outcome_required_count, outcome_passed = _bucket(outcome_required)
@@ -452,6 +464,23 @@ def _build_universal_outcome_scorecard(
             "adopted_on_first_turn": adaptation_passed,
             "pass_rate": adaptation_rate,
             "estimated_extra_turns_per_case": round(1.0 - adaptation_rate, 6),
+        },
+        "intervention_precision_recall": {
+            "required_proactive": len(proactive_required),
+            "emitted_proactive": len(proactive_emitted),
+            "true_positive": len(proactive_true_positive),
+            "precision": round(
+                float(len(proactive_true_positive)) / float(len(proactive_emitted))
+                if proactive_emitted
+                else 1.0,
+                6,
+            ),
+            "recall": round(
+                float(len(proactive_true_positive)) / float(len(proactive_required))
+                if proactive_required
+                else 1.0,
+                6,
+            ),
         },
         "regression_resilience": {
             "required": total,

@@ -59,6 +59,7 @@ async def test_run_replay_eval_reports_threshold_failure(tmp_path):
     scorecard = report["universal_outcome_scorecard"]
     assert scorecard["overall_score"]["all_metrics_green"] is False
     assert "regression_resilience" in scorecard
+    assert "intervention_precision_recall" in scorecard
     assert scorecard["regression_resilience"]["pass_rate"] == 0.5
 
 

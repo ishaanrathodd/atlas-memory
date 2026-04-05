@@ -16,7 +16,7 @@ It answers:
 ## Last Updated
 
 - Date: `2026-04-05`
-- Repository status: `green` (`207 passed, 10 skipped`)
+- Repository status: `green` (`210 passed, 10 skipped`)
 
 
 ## Executive Summary
@@ -284,7 +284,7 @@ Important:
 1. Personal setup reliability + seam hardening
 - upstream-safe Atlas integration path (avoid direct edits on linked `hermes-agent` upstream branch)
 - cross-environment Atlas bridge path hardening and packaging checks
-- setup diagnostics for missing Atlas prerequisites
+- setup diagnostics for missing Atlas prerequisites (`setup-diagnostics` runtime task shipped; setup UX/docs hardening pending)
 
 2. Retrieval intelligence
 - reranker improvements (second pass + evaluation tuning)
@@ -376,6 +376,15 @@ Important:
   - runtime/CLI wiring added for conversation-driven operation only (no manual dashboard workflow)
   - schema decision: no schema changes required; this is eval/runtime orchestration only
 - validation: eval/runtime targeted tests green; atlas full suite `207 passed, 10 skipped`
+- setup reliability + retrieval/trust/eval hardening pass (this session):
+  - added `setup-diagnostics` task in `memory.curator_runtime` with environment, import-path, and Supabase health checks
+  - added installable CLI entrypoint `memory-curator` in `pyproject.toml`
+  - implemented retrieval second-pass reranker (`rerank_items_second_pass`) and wired analogous case reranking to outcome/evidence/confidence signals
+  - proactive coaching now emits trigger-confidence context and keeps explicit better-path guidance when prior risk evidence exists
+  - trust ledger now surfaces evidence certainty labels (`high/medium/low`) in addition to freshness/currentness markers
+  - universal replay scorecard now includes intervention precision/recall observability metrics
+  - schema decision: no schema changes required; all updates are runtime/retrieval/eval-layer only
+- validation: targeted changed-suite `118 passed`; atlas full suite `210 passed, 10 skipped`
 
 
 ## Evaluation and Quality Gates
@@ -391,7 +400,7 @@ Important:
 
 - expand LLM-judge calibration coverage (prompt tuning, sampled-scenario mix, cost/latency guardrails)
 - adversarial temporal recall cases
-- proactive-intervention precision/recall tests
+- expand proactive-intervention precision/recall scenario coverage (metric is now emitted in universal scorecard)
 
 ### Primary Metrics (Source of Truth)
 
@@ -477,7 +486,7 @@ Final Atlas is done when all are true:
 
 ## Immediate Next Actions
 
-1. [ ] finalize personal setup reliability (`hermes memory setup` UX and docs) — pending upstream-safe landing path
+1. [ ] finalize personal setup reliability (`hermes memory setup` UX and docs) — diagnostics runtime is live, docs and one-command setup flow still pending
 2. [x] implement retrieval planner skeleton and first reranker pass
 3. [x] define and migrate case-memory tables
 4. [x] make episode-first feature extraction the default memory processor path
@@ -485,6 +494,7 @@ Final Atlas is done when all are true:
 6. [x] add long-horizon eval suite baseline (deterministic replay + CI gate, LLM-in-loop ready)
 7. [x] complete canonical identity conflict-resolution lifecycle (confirm/supersede/revoke semantics)
 8. [x] add optional replay LLM-judge layer with CLI toggles (non-dashboard, enforce optional)
+9. [x] ship retrieval/trust hardening pass (second-pass rerank + certainty labels + proactive trigger confidence)
 
 
 ## Next Chat Continuation Protocol

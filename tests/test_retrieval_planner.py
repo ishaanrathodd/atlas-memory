@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from memory.retrieval_planner import RetrievalSignals, build_retrieval_plan, rerank_items_first_pass
+from memory.retrieval_planner import (
+    RetrievalSignals,
+    build_retrieval_plan,
+    rerank_items_first_pass,
+    rerank_items_second_pass,
+)
 
 
 def _utcnow() -> datetime:
@@ -68,3 +73,26 @@ def test_rerank_items_first_pass_blends_semantic_lexical_and_temporal() -> None:
     )
 
     assert ranked[0].text == "continuity regression after restart"
+
+
+def test_rerank_items_second_pass_promotes_outcome_and_evidence_rich_items() -> None:
+    now = _utcnow()
+    items = [
+        _EpisodeCandidate(text="generic update", ts=now - timedelta(hours=1), semantic=0.9),
+        _EpisodeCandidate(text="failure postmortem with corrective path", ts=now - timedelta(days=2), semantic=0.7),
+    ]
+    first_pass_order = {id(items[0]): 0, id(items[1]): 1}
+
+    ranked = rerank_items_second_pass(
+        items,
+        first_pass_rank=lambda item: first_pass_order[id(item)],
+        outcome_signal=lambda item: 1.0 if "failure" in item.text else 0.1,
+        evidence_signal=lambda item: 0.9 if "corrective" in item.text else 0.1,
+        confidence_signal=lambda item: item.semantic,
+        first_pass_weight=0.4,
+        outcome_weight=0.9,
+        evidence_weight=0.7,
+        confidence_weight=0.3,
+    )
+
+    assert ranked[0].text == "failure postmortem with corrective path"

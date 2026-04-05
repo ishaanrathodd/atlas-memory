@@ -124,3 +124,40 @@ def rerank_items_first_pass(
 
     scored.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
     return [item for _, _, item in scored]
+
+
+def rerank_items_second_pass(
+    items: Sequence[_ItemT],
+    *,
+    first_pass_rank: Callable[[_ItemT], int],
+    outcome_signal: Callable[[_ItemT], float],
+    evidence_signal: Callable[[_ItemT], float],
+    confidence_signal: Callable[[_ItemT], float],
+    first_pass_weight: float = 1.0,
+    outcome_weight: float = 0.7,
+    evidence_weight: float = 0.5,
+    confidence_weight: float = 0.4,
+) -> list[_ItemT]:
+    """Refine first-pass ordering using outcome/evidence confidence signals.
+
+    Inputs are intentionally generic so the same scorer can rank episodes, outcomes,
+    or analogous cases without coupling planner logic to domain models.
+    """
+    if not items:
+        return []
+
+    max_rank = max(1, len(items) - 1)
+    scored: list[tuple[float, int, _ItemT]] = []
+    for item in items:
+        rank = max(0, int(first_pass_rank(item)))
+        first_pass_score = 1.0 - (min(rank, max_rank) / float(max_rank))
+        combined_score = (
+            first_pass_score * float(first_pass_weight)
+            + max(0.0, float(outcome_signal(item))) * float(outcome_weight)
+            + max(0.0, float(evidence_signal(item))) * float(evidence_weight)
+            + max(0.0, float(confidence_signal(item))) * float(confidence_weight)
+        )
+        scored.append((combined_score, -rank, item))
+
+    scored.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
+    return [item for _, _, item in scored]

@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime, timezone
+import importlib.util
 import json
 import os
 import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from memory.backfill import backfill_memory_files
 from memory.client import MemoryClient
@@ -277,6 +279,152 @@ async def process_memory(
     }
 
 
+def _diagnostic_entry(*, name: str, status: str, detail: str, recommendation: str | None = None) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "name": name,
+        "status": status,
+        "detail": detail,
+    }
+    if recommendation:
+        item["recommendation"] = recommendation
+    return item
+
+
+def _is_valid_http_url(value: str | None) -> bool:
+    if not value:
+        return False
+    parsed = urlparse(str(value).strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+async def run_setup_diagnostics(
+    *,
+    client: MemoryClient | None,
+    hermes_home: str | Path | None = None,
+    client_build_error: str | None = None,
+) -> dict[str, Any]:
+    root = Path(hermes_home or os.getenv("HERMES_HOME") or DEFAULT_HERMES_HOME).expanduser()
+    env_path = root / ".env"
+
+    checks: list[dict[str, Any]] = []
+    checks.append(
+        _diagnostic_entry(
+            name="hermes_home",
+            status="pass" if root.exists() else "fail",
+            detail=f"HERMES_HOME={root}",
+            recommendation=None if root.exists() else "Create the Hermes home directory or set HERMES_HOME.",
+        )
+    )
+    checks.append(
+        _diagnostic_entry(
+            name="env_file",
+            status="pass" if env_path.exists() else "warn",
+            detail=f"Env file path: {env_path}",
+            recommendation=None if env_path.exists() else "Add a .env file under HERMES_HOME for consistent local setup.",
+        )
+    )
+
+    supabase_url = os.getenv("MEMORY_SUPABASE_URL")
+    checks.append(
+        _diagnostic_entry(
+            name="supabase_url",
+            status="pass" if _is_valid_http_url(supabase_url) else "fail",
+            detail="MEMORY_SUPABASE_URL configured." if _is_valid_http_url(supabase_url) else "MEMORY_SUPABASE_URL is missing or invalid.",
+            recommendation=None if _is_valid_http_url(supabase_url) else "Set MEMORY_SUPABASE_URL to your project HTTPS endpoint.",
+        )
+    )
+
+    supabase_key = os.getenv("MEMORY_SUPABASE_KEY")
+    key_ok = bool((supabase_key or "").strip()) and len((supabase_key or "").strip()) >= 20
+    checks.append(
+        _diagnostic_entry(
+            name="supabase_key",
+            status="pass" if key_ok else "fail",
+            detail="MEMORY_SUPABASE_KEY configured." if key_ok else "MEMORY_SUPABASE_KEY is missing or too short.",
+            recommendation=None if key_ok else "Set MEMORY_SUPABASE_KEY (or SUPABASE_SERVICE_KEY) in your environment.",
+        )
+    )
+
+    openai_key = os.getenv("MEMORY_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    checks.append(
+        _diagnostic_entry(
+            name="embedding_key",
+            status="pass" if openai_key else "warn",
+            detail="Embedding API key configured." if openai_key else "Embedding API key not configured.",
+            recommendation=None if openai_key else "Set MEMORY_OPENAI_API_KEY (or OPENAI_API_KEY) for embedding refresh tasks.",
+        )
+    )
+
+    openai_base_url = os.getenv("MEMORY_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+    checks.append(
+        _diagnostic_entry(
+            name="embedding_base_url",
+            status="pass" if _is_valid_http_url(openai_base_url) else "warn",
+            detail=f"Embedding base URL: {openai_base_url or 'missing'}",
+            recommendation=None if _is_valid_http_url(openai_base_url) else "Set MEMORY_OPENAI_BASE_URL to a valid HTTP(S) endpoint.",
+        )
+    )
+
+    bridge_available = importlib.util.find_spec("memory.bridge_server") is not None
+    checks.append(
+        _diagnostic_entry(
+            name="atlas_runtime_import",
+            status="pass" if bridge_available else "fail",
+            detail="memory.bridge_server import path is available." if bridge_available else "memory.bridge_server import path not found.",
+            recommendation=None if bridge_available else "Install atlas package in the current environment (e.g. pip install -e .).",
+        )
+    )
+
+    if client_build_error:
+        checks.append(
+            _diagnostic_entry(
+                name="client_build",
+                status="fail",
+                detail=f"Failed to create memory client: {client_build_error}",
+                recommendation="Fix the environment errors above and rerun setup-diagnostics.",
+            )
+        )
+    elif client is None:
+        checks.append(
+            _diagnostic_entry(
+                name="client_build",
+                status="fail",
+                detail="No memory client was available for diagnostics.",
+                recommendation="Fix configuration and rerun setup-diagnostics.",
+            )
+        )
+    else:
+        try:
+            is_healthy = bool(await client.health_check())
+            checks.append(
+                _diagnostic_entry(
+                    name="supabase_health",
+                    status="pass" if is_healthy else "fail",
+                    detail="Supabase transport health check passed." if is_healthy else "Supabase transport health check failed.",
+                    recommendation=None if is_healthy else "Verify Supabase URL/key and network connectivity.",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                _diagnostic_entry(
+                    name="supabase_health",
+                    status="fail",
+                    detail=f"Supabase health check error: {exc}",
+                    recommendation="Verify Supabase credentials and that the memory schema/tables are provisioned.",
+                )
+            )
+
+    failing = [entry for entry in checks if entry["status"] == "fail"]
+    warnings = [entry for entry in checks if entry["status"] == "warn"]
+    return {
+        "task": "setup-diagnostics",
+        "ok": not failing,
+        "failed": len(failing),
+        "warnings": len(warnings),
+        "checks": checks,
+    }
+
+
 async def run_task(
     task: str,
     *,
@@ -302,8 +450,28 @@ async def run_task(
             judge_sample_limit=judge_sample_limit,
         )
 
+    build_error: str | None = None
     owns_client = client is None
-    active_client = client or build_client()
+    active_client = client
+    if active_client is None:
+        try:
+            active_client = build_client()
+        except Exception as exc:
+            build_error = str(exc)
+
+    if task == "setup-diagnostics":
+        result = await run_setup_diagnostics(
+            client=active_client,
+            hermes_home=hermes_home,
+            client_build_error=build_error,
+        )
+        if owns_client and active_client is not None:
+            await close_client_resources(active_client)
+        return result
+
+    if active_client is None:
+        raise RuntimeError(f"Failed to initialize memory client: {build_error or 'unknown error'}")
+
     try:
         resolved_lookback = lookback_hours or int(os.getenv("MEMORY_CONSOLIDATE_LOOKBACK_HOURS", "6"))
         resolved_min_messages = min_message_count or int(os.getenv("MEMORY_CONSOLIDATE_MIN_MESSAGES", "3"))
@@ -336,7 +504,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m memory.curator_runtime")
     parser.add_argument(
         "task",
-        choices=("process-memory", "extract-facts", "backfill", "stats", "health", "replay-eval"),
+        choices=("process-memory", "extract-facts", "backfill", "stats", "health", "replay-eval", "setup-diagnostics"),
     )
     parser.add_argument("--lookback-hours", type=int)
     parser.add_argument("--min-message-count", type=int)

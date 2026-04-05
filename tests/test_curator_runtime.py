@@ -2292,6 +2292,9 @@ def test_cli_parser_accepts_supported_tasks() -> None:
     assert replay_with_judge.judge_model == "gpt-4o-mini"
     assert replay_with_judge.judge_sample_limit == 6
 
+    diagnostics_args = parser.parse_args(["setup-diagnostics"])
+    assert diagnostics_args.task == "setup-diagnostics"
+
 
 def test_runtime_main_dispatches_task_and_prints_json(
     monkeypatch: pytest.MonkeyPatch,
@@ -2350,6 +2353,38 @@ async def test_run_task_health_reports_supabase_status() -> None:
     result = await runtime.run_task("health", client=client)
 
     assert result == {"ok": False}
+
+
+@pytest.mark.asyncio
+async def test_run_task_setup_diagnostics_reports_failures_and_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    transport = CuratorRuntimeTransport()
+    transport.healthy = False
+    client = _make_client(transport)
+
+    monkeypatch.setenv("MEMORY_SUPABASE_URL", "not-a-url")
+    monkeypatch.delenv("MEMORY_SUPABASE_KEY", raising=False)
+    monkeypatch.delenv("MEMORY_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(runtime.importlib.util, "find_spec", lambda _: None)
+
+    result = await runtime.run_task(
+        "setup-diagnostics",
+        client=client,
+        hermes_home=tmp_path,
+    )
+
+    assert result["task"] == "setup-diagnostics"
+    assert result["ok"] is False
+    assert result["failed"] >= 3
+    assert result["warnings"] >= 1
+    checks = {entry["name"]: entry for entry in result["checks"]}
+    assert checks["supabase_url"]["status"] == "fail"
+    assert checks["supabase_key"]["status"] == "fail"
+    assert checks["atlas_runtime_import"]["status"] == "fail"
+    assert checks["embedding_key"]["status"] == "warn"
 
 
 @pytest.mark.asyncio
