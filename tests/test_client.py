@@ -268,6 +268,13 @@ class InMemoryTransport:
         return True
 
 
+class SlowSessionTransport(InMemoryTransport):
+    async def get_session(self, session_id: str) -> Session | None:
+        session = await super().get_session(session_id)
+        await asyncio.sleep(0.01)
+        return session
+
+
 @pytest.mark.asyncio
 async def test_client_tracks_session_counts_and_history() -> None:
     transport = InMemoryTransport()
@@ -285,6 +292,54 @@ async def test_client_tracks_session_counts_and_history() -> None:
     assert stored_session.dominant_emotion_counts
     assert len(transport.history) == 3
     assert transport.facts[str(updated.id)].is_active is False
+
+
+@pytest.mark.asyncio
+async def test_update_session_stats_serializes_concurrent_updates() -> None:
+    transport = SlowSessionTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session()
+    now = datetime.now(timezone.utc)
+
+    user_episode = Episode(
+        id=uuid4(),
+        session_id=session.id,
+        role=EpisodeRole.USER,
+        content="I am excited.",
+        content_hash="user-episode",
+        platform=session.platform,
+        embedding=None,
+        emotions={"joy": 0.9},
+        dominant_emotion="joy",
+        emotional_intensity=0.9,
+        message_timestamp=now,
+        message_metadata={},
+    )
+    assistant_episode = Episode(
+        id=uuid4(),
+        session_id=session.id,
+        role=EpisodeRole.ASSISTANT,
+        content="Let's ship carefully.",
+        content_hash="assistant-episode",
+        platform=session.platform,
+        embedding=None,
+        emotions={"trust": 0.6},
+        dominant_emotion="trust",
+        emotional_intensity=0.6,
+        message_timestamp=now,
+        message_metadata={},
+    )
+
+    await asyncio.gather(
+        client._update_session_stats(str(session.id), [user_episode]),
+        client._update_session_stats(str(session.id), [assistant_episode]),
+    )
+
+    stored_session = transport.sessions[str(session.id)]
+    assert stored_session.message_count == 2
+    assert stored_session.user_message_count == 1
+    assert stored_session.dominant_emotion_counts["joy"] == 1
+    assert stored_session.dominant_emotion_counts["trust"] == 1
 
 
 @pytest.mark.asyncio

@@ -29,7 +29,7 @@ def test_fact_model_round_trips_enums_and_lists() -> None:
 
 def test_session_requires_timezone_aware_datetimes() -> None:
     with pytest.raises(ValidationError):
-        Session(platform=Platform.LOCAL, started_at=datetime.utcnow())
+        Session(platform=Platform.LOCAL, started_at=datetime(2026, 1, 1, 12, 0, 0))
 
 
 def test_episode_embedding_is_normalized_to_float() -> None:

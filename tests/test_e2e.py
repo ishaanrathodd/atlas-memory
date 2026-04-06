@@ -14,7 +14,7 @@ from memory.models import Episode, Fact, Platform, Session
 from memory.transport import LocalTransport
 
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://zopqdjmvbokconktqexf.supabase.co")
+SUPABASE_URL = os.getenv("MEMORY_SUPABASE_URL") or os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("MEMORY_SUPABASE_KEY")
 TEST_TAG = "memory-e2e"
 
@@ -119,8 +119,8 @@ def _build_client() -> MemoryClient:
 
 @pytest.fixture
 async def e2e_context() -> E2EContext:
-    if not SUPABASE_SERVICE_KEY:
-        pytest.skip("E2E tests require SUPABASE_SERVICE_KEY or MEMORY_SUPABASE_KEY.")
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        pytest.skip("E2E tests require MEMORY_SUPABASE_URL/SUPABASE_URL and MEMORY_SUPABASE_KEY/SUPABASE_SERVICE_KEY.")
 
     client = _build_client()
     context = E2EContext(

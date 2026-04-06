@@ -4,20 +4,38 @@ import os
 from dataclasses import dataclass, field
 
 
+def _first_env(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None:
+            return value
+    return None
+
+
 @dataclass(slots=True)
 class MemoryConfig:
-    supabase_url: str | None = field(default_factory=lambda: os.getenv("MEMORY_SUPABASE_URL"))
-    supabase_key: str | None = field(default_factory=lambda: os.getenv("MEMORY_SUPABASE_KEY"))
+    supabase_url: str | None = field(
+        default_factory=lambda: _first_env("MEMORY_SUPABASE_URL", "ATLAS_SUPABASE_URL", "SUPABASE_URL")
+    )
+    supabase_key: str | None = field(
+        default_factory=lambda: _first_env("MEMORY_SUPABASE_KEY", "ATLAS_SUPABASE_KEY", "SUPABASE_SERVICE_KEY")
+    )
     supabase_schema: str = field(default_factory=lambda: os.getenv("MEMORY_SUPABASE_SCHEMA", "memory"))
-    embedding_model: str = field(default_factory=lambda: os.getenv("MEMORY_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
-    embedding_dimensions: int = field(default_factory=lambda: int(os.getenv("MEMORY_EMBEDDING_DIMENSIONS", "512")))
-    default_platform: str = field(default_factory=lambda: os.getenv("MEMORY_DEFAULT_PLATFORM", "local"))
+    embedding_model: str = field(
+        default_factory=lambda: _first_env("MEMORY_OPENAI_EMBEDDING_MODEL", "ATLAS_OPENAI_EMBEDDING_MODEL")
+        or "text-embedding-3-small"
+    )
+    embedding_dimensions: int = field(
+        default_factory=lambda: int(_first_env("MEMORY_EMBEDDING_DIMENSIONS", "ATLAS_EMBEDDING_DIMENSIONS") or "512")
+    )
+    default_platform: str = field(
+        default_factory=lambda: _first_env("MEMORY_DEFAULT_PLATFORM", "ATLAS_DEFAULT_PLATFORM") or "local"
+    )
     openai_api_key: str | None = field(
-        default_factory=lambda: os.getenv("MEMORY_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+        default_factory=lambda: _first_env("MEMORY_OPENAI_API_KEY", "ATLAS_OPENAI_API_KEY", "OPENAI_API_KEY")
     )
     openai_base_url: str = field(
-        default_factory=lambda: os.getenv("MEMORY_OPENAI_BASE_URL")
-        or os.getenv("OPENAI_BASE_URL")
+        default_factory=lambda: _first_env("MEMORY_OPENAI_BASE_URL", "ATLAS_OPENAI_BASE_URL", "OPENAI_BASE_URL")
         or "https://api.openai.com/v1"
     )
 

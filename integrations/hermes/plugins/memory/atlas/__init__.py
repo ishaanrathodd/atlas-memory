@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import queue
+import re
 import select
 import subprocess
 import sys
@@ -20,6 +21,20 @@ logger = logging.getLogger(__name__)
 _MEMORY_LIVE_SESSION_NAMESPACE = uuid5(NAMESPACE_URL, "memory://hermes-live-session")
 _SESSION_TIMEOUT_SECONDS = 30.0
 _PING_TIMEOUT_SECONDS = 10.0
+_ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENV_ALIAS_PAIRS: tuple[tuple[str, str], ...] = (
+    ("MEMORY_SUPABASE_URL", "ATLAS_SUPABASE_URL"),
+    ("MEMORY_SUPABASE_URL", "SUPABASE_URL"),
+    ("MEMORY_SUPABASE_KEY", "ATLAS_SUPABASE_KEY"),
+    ("MEMORY_SUPABASE_KEY", "SUPABASE_SERVICE_KEY"),
+    ("MEMORY_OPENAI_API_KEY", "ATLAS_OPENAI_API_KEY"),
+    ("MEMORY_OPENAI_API_KEY", "OPENAI_API_KEY"),
+    ("MEMORY_OPENAI_BASE_URL", "ATLAS_OPENAI_BASE_URL"),
+    ("MEMORY_OPENAI_BASE_URL", "OPENAI_BASE_URL"),
+    ("MEMORY_OPENAI_EMBEDDING_MODEL", "ATLAS_OPENAI_EMBEDDING_MODEL"),
+    ("MEMORY_EMBEDDING_DIMENSIONS", "ATLAS_EMBEDDING_DIMENSIONS"),
+    ("MEMORY_DEFAULT_PLATFORM", "ATLAS_DEFAULT_PLATFORM"),
+)
 
 
 def _utcnow_iso() -> str:
@@ -116,6 +131,23 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _strip_quotes(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
+def _resolve_env_value(raw_value: str, context: dict[str, str]) -> str:
+    value = _strip_quotes(raw_value)
+    for _ in range(8):
+        resolved = _ENV_REFERENCE.sub(lambda match: context.get(match.group(1), os.environ.get(match.group(1), "")), value)
+        if resolved == value:
+            break
+        value = resolved
+    return value
+
+
 def _read_env_file(hermes_home: str | None = None) -> dict[str, str]:
     env_path = _hermes_home_path(hermes_home) / ".env"
     values: dict[str, str] = {}
@@ -126,7 +158,9 @@ def _read_env_file(hermes_home: str | None = None) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip("'").strip('"')
+        normalized_key = key.strip()
+        context = {**os.environ, **values}
+        values[normalized_key] = _resolve_env_value(value, context)
     return values
 
 
@@ -153,6 +187,12 @@ def _build_runtime_env(hermes_home: str | None = None) -> dict[str, str]:
     ):
         if key in file_env and key not in env:
             env[key] = file_env[key]
+
+    for target, source in _ENV_ALIAS_PAIRS:
+        if target not in env and source in file_env:
+            env[target] = file_env[source]
+        if not env.get(target) and env.get(source):
+            env[target] = env[source]
 
     config_to_env = {
         "supabase_url": "MEMORY_SUPABASE_URL",

@@ -30,10 +30,25 @@ Run this section when provisioning or upgrading a Supabase backend.
 
 Apply in this order (idempotent-safe for mixed environments):
 
-1. `migrations/2026-04-03_memory_schema_transition.sql`
-2. `migrations/2026-04-03_platform_text.sql`
-3. `migrations/2026-04-05_compatibility_view_retirement.sql`
-4. `migrations/2026-04-05_migration_hygiene_cleanup.sql`
+1. `migrations/2026-04-01_session_metadata_parity.sql`
+2. `migrations/2026-04-02_agent_namespace_foundation.sql`
+3. `migrations/2026-04-02_active_state.sql`
+4. `migrations/2026-04-02_commitments.sql`
+5. `migrations/2026-04-02_corrections.sql`
+6. `migrations/2026-04-02_decision_outcomes.sql`
+7. `migrations/2026-04-02_directives.sql`
+8. `migrations/2026-04-02_patterns.sql`
+9. `migrations/2026-04-02_timeline_events.sql`
+10. `migrations/2026-04-02_timeline_event_rollup_kinds.sql`
+11. `migrations/2026-04-03_agent_namespace_hardening.sql`
+12. `migrations/2026-04-03_memory_schema_transition.sql`
+13. `migrations/2026-04-03_platform_text.sql`
+14. `migrations/2026-04-03_session_handoffs.sql`
+15. `migrations/2026-04-04_reflections.sql`
+16. `migrations/2026-04-05_case_memory.sql`
+17. `migrations/2026-04-05_compatibility_view_retirement.sql`
+18. `migrations/2026-04-05_migration_hygiene_cleanup.sql`
+19. `migrations/2026-04-06_temporal_graph_layer.sql`
 
 Recommended execution:
 

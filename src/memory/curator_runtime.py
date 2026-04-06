@@ -42,6 +42,19 @@ DEFAULT_HERMES_HOME = Path.home() / ".hermes"
 DEFAULT_GLM_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 _ENV_ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENV_ALIAS_PAIRS: tuple[tuple[str, str], ...] = (
+    ("MEMORY_SUPABASE_URL", "ATLAS_SUPABASE_URL"),
+    ("MEMORY_SUPABASE_URL", "SUPABASE_URL"),
+    ("MEMORY_SUPABASE_KEY", "ATLAS_SUPABASE_KEY"),
+    ("MEMORY_SUPABASE_KEY", "SUPABASE_SERVICE_KEY"),
+    ("MEMORY_OPENAI_API_KEY", "ATLAS_OPENAI_API_KEY"),
+    ("MEMORY_OPENAI_API_KEY", "OPENAI_API_KEY"),
+    ("MEMORY_OPENAI_BASE_URL", "ATLAS_OPENAI_BASE_URL"),
+    ("MEMORY_OPENAI_BASE_URL", "OPENAI_BASE_URL"),
+    ("MEMORY_OPENAI_EMBEDDING_MODEL", "ATLAS_OPENAI_EMBEDDING_MODEL"),
+    ("MEMORY_EMBEDDING_DIMENSIONS", "ATLAS_EMBEDDING_DIMENSIONS"),
+    ("MEMORY_DEFAULT_PLATFORM", "ATLAS_DEFAULT_PLATFORM"),
+)
 
 _DEFAULT_ATLAS_CONFIG = {
     "supabase_schema": "memory",
@@ -86,28 +99,11 @@ def _resolve_env_value(raw_value: str, context: dict[str, str]) -> str:
 
 
 def _apply_env_aliases() -> None:
-    aliases = {
-        "MEMORY_SUPABASE_URL": "MEMORY_SUPABASE_URL",
-        "MEMORY_SUPABASE_KEY": "MEMORY_SUPABASE_KEY",
-        "MEMORY_OPENAI_API_KEY": "MEMORY_OPENAI_API_KEY",
-        "MEMORY_OPENAI_BASE_URL": "MEMORY_OPENAI_BASE_URL",
-        "MEMORY_DEFAULT_PLATFORM": "MEMORY_DEFAULT_PLATFORM",
-        "MEMORY_SUPABASE_URL": "SUPABASE_URL",
-        "MEMORY_SUPABASE_KEY": "SUPABASE_SERVICE_KEY",
-        "MEMORY_OPENAI_API_KEY": "OPENAI_API_KEY",
-        "MEMORY_OPENAI_BASE_URL": "OPENAI_BASE_URL",
-    }
-    for target, source in aliases.items():
+    for target, source in _ENV_ALIAS_PAIRS:
         if not os.getenv(target) and os.getenv(source):
             os.environ[target] = os.environ[source]
 
     os.environ.setdefault("HERMES_HOME", str(Path(os.getenv("HERMES_HOME", str(DEFAULT_HERMES_HOME))).expanduser()))
-    os.environ.setdefault("MEMORY_SUPABASE_URL", os.getenv("MEMORY_SUPABASE_URL", "https://zopqdjmvbokconktqexf.supabase.co"))
-    os.environ.setdefault("MEMORY_OPENAI_BASE_URL", os.getenv("MEMORY_OPENAI_BASE_URL", "https://api.openai.com/v1"))
-    os.environ.setdefault("MEMORY_DEFAULT_PLATFORM", os.getenv("MEMORY_DEFAULT_PLATFORM", "telegram"))
-    os.environ.setdefault("MEMORY_SUPABASE_URL", "https://zopqdjmvbokconktqexf.supabase.co")
-    os.environ.setdefault("MEMORY_OPENAI_BASE_URL", "https://api.openai.com/v1")
-    os.environ.setdefault("MEMORY_DEFAULT_PLATFORM", "telegram")
 
 
 def load_hermes_env(hermes_home: str | Path | None = None) -> dict[str, str]:

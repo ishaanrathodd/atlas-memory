@@ -10,7 +10,7 @@ Primary modules:
 
 For implementation details and roadmap, see:
 - `MEMORY_IMPLEMENTATION_PLAN.md`
-- `MEMORY_REDESIGN.md`
+- `ALWAYS_ON_SPEC.md`
 
 ## Quick Setup
 

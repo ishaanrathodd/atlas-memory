@@ -221,6 +221,86 @@ async def test_transport_list_sessions_applies_platform_filter() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transport_search_facts_uses_string_tag_filter_for_single_tag() -> None:
+    now = datetime.now(timezone.utc)
+    fact = Fact(
+        id=uuid4(),
+        agent_namespace="default",
+        content="User likes tea.",
+        category=FactCategory.PREFERENCE,
+        confidence=0.9,
+        event_time=now,
+        transaction_time=now,
+        is_active=True,
+        source_episode_ids=[],
+        access_count=0,
+        last_accessed_at=None,
+        tags=["tea"],
+        created_at=now,
+        updated_at=now,
+    )
+    fake_client = FakeSupabaseClient({}, rpc_responses={"search_facts": [fact.model_dump(mode="json")]})
+    transport = SupabaseTransport(client=fake_client)
+
+    results = await transport.search_facts(tags=["tea"], limit=5)
+
+    assert len(results) == 1
+    assert fake_client.schema_rpc_calls[-1][2]["tag_filter"] == "tea"
+
+
+@pytest.mark.asyncio
+async def test_transport_search_facts_intersects_multiple_tags_client_side() -> None:
+    now = datetime.now(timezone.utc)
+    shared = Fact(
+        id=uuid4(),
+        agent_namespace="default",
+        content="User likes green tea.",
+        category=FactCategory.PREFERENCE,
+        confidence=0.95,
+        event_time=now,
+        transaction_time=now,
+        is_active=True,
+        source_episode_ids=[],
+        access_count=3,
+        last_accessed_at=None,
+        tags=["tea", "green"],
+        created_at=now,
+        updated_at=now,
+    )
+    stronger_shared = shared.model_copy(
+        update={
+            "id": uuid4(),
+            "content": "User likes ceremonial matcha.",
+            "access_count": 8,
+        }
+    )
+    tea_only = shared.model_copy(update={"id": uuid4(), "content": "User likes black tea.", "tags": ["tea"]})
+    green_only = shared.model_copy(update={"id": uuid4(), "content": "User likes green juice.", "tags": ["green"]})
+
+    fake_client = FakeSupabaseClient(
+        {},
+        rpc_responses={
+            "search_facts": [
+                stronger_shared.model_dump(mode="json"),
+                shared.model_dump(mode="json"),
+                tea_only.model_dump(mode="json"),
+                green_only.model_dump(mode="json"),
+            ]
+        },
+    )
+    transport = SupabaseTransport(client=fake_client)
+
+    results = await transport.search_facts(tags=["tea", "green"], limit=10)
+    tag_filters = [params["tag_filter"] for _, name, params in fake_client.schema_rpc_calls if name == "search_facts"]
+
+    assert [fact.content for fact in results] == [
+        "User likes ceremonial matcha.",
+        "User likes green tea.",
+    ]
+    assert tag_filters == ["tea", "green"]
+
+
+@pytest.mark.asyncio
 async def test_transport_list_sessions_filters_agent_namespace_strictly() -> None:
     now = datetime.now(timezone.utc)
     fake_client = FakeSupabaseClient(

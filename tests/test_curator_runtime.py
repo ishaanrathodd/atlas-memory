@@ -3051,3 +3051,34 @@ def test_load_hermes_env_resolves_shell_references(tmp_path: Path, monkeypatch: 
 
     assert loaded["MEMORY_OPENAI_BASE_URL"] == "https://example.test/v1"
     assert os.environ["GLM_API_KEY"] == "glm-secret"
+
+
+def test_apply_env_aliases_supports_legacy_atlas_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "MEMORY_SUPABASE_URL",
+        "MEMORY_DEFAULT_PLATFORM",
+        "ATLAS_SUPABASE_URL",
+        "ATLAS_DEFAULT_PLATFORM",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("ATLAS_SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("ATLAS_DEFAULT_PLATFORM", "telegram")
+
+    runtime._apply_env_aliases()
+
+    assert os.environ["MEMORY_SUPABASE_URL"] == "https://example.supabase.co"
+    assert os.environ["MEMORY_DEFAULT_PLATFORM"] == "telegram"
+
+
+def test_apply_env_aliases_does_not_invent_supabase_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "MEMORY_SUPABASE_URL",
+        "ATLAS_SUPABASE_URL",
+        "SUPABASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    runtime._apply_env_aliases()
+
+    assert os.environ.get("MEMORY_SUPABASE_URL") is None

@@ -555,7 +555,7 @@ Use this section whenever work continues in a new chat.
 Minimum files to load before implementation:
 
 - `atlas/MEMORY_IMPLEMENTATION_PLAN.md`
-- `atlas/MEMORY_REDESIGN.md`
+- `atlas/docs/ALWAYS_ON_SPEC.md`
 - `atlas/src/memory/client.py`
 - `atlas/src/memory/transport.py`
 - `atlas/src/memory/consolidation.py`
@@ -579,7 +579,7 @@ Continue Atlas memory implementation from source-of-truth plan.
 
 Read these files first:
 - atlas/MEMORY_IMPLEMENTATION_PLAN.md
-- atlas/MEMORY_REDESIGN.md
+- atlas/docs/ALWAYS_ON_SPEC.md
 - atlas/src/memory/client.py
 - atlas/src/memory/transport.py
 - atlas/src/memory/consolidation.py
@@ -601,4 +601,3 @@ Then:
 4) Update MEMORY_IMPLEMENTATION_PLAN.md with progress and any schema decisions.
 5) Run targeted + full tests and report results.
 ```
-

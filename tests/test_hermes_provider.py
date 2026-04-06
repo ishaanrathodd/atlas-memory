@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -98,3 +99,30 @@ def test_default_profile_maps_to_default_namespace() -> None:
     assert normalize_agent_namespace("primary") == "default"
     assert normalize_agent_namespace("main") == "main"
     assert normalize_agent_namespace("atlas") == "atlas"
+
+
+def test_build_runtime_env_resolves_references_and_atlas_aliases(tmp_path: Path, monkeypatch) -> None:
+    for key in (
+        "MEMORY_SUPABASE_URL",
+        "MEMORY_SUPABASE_KEY",
+        "MEMORY_OPENAI_BASE_URL",
+        "SUPABASE_SERVICE_KEY",
+        "ATLAS_SUPABASE_URL",
+        "ATLAS_OPENAI_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    (tmp_path / ".env").write_text(
+        "SUPABASE_SERVICE_KEY=service-role-secret\n"
+        "ATLAS_SUPABASE_URL=https://example.supabase.co\n"
+        "MEMORY_SUPABASE_KEY=${SUPABASE_SERVICE_KEY}\n"
+        "ATLAS_OPENAI_BASE_URL=https://api.z.ai/v1\n",
+        encoding="utf-8",
+    )
+
+    env = _MODULE._build_runtime_env(str(tmp_path))
+
+    assert env["MEMORY_SUPABASE_URL"] == "https://example.supabase.co"
+    assert env["MEMORY_SUPABASE_KEY"] == "service-role-secret"
+    assert env["MEMORY_OPENAI_BASE_URL"] == "https://api.z.ai/v1"
+    assert env["HERMES_HOME"] == str(tmp_path)

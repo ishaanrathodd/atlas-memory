@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "memory"
 version = "0.1.0"
 description = "Async memory client for storing episodic and semantic memory in Supabase."
-readme = "SPEC.md"
+readme = "docs/SPEC.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
@@ -35,7 +35,7 @@ packages = ["src/memory"]
 include = [
   "/src",
   "/tests",
-  "/SPEC.md",
+  "/docs/SPEC.md",
   "/pyproject.toml",
 ]
 

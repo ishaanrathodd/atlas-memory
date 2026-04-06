@@ -472,6 +472,11 @@ def _filter_records_by_agent_namespace(records: list[Any], requested_namespace: 
     ]
 
 
+def _fact_search_sort_key(fact: Fact) -> tuple[float, float]:
+    event_time = fact.event_time.timestamp() if fact.event_time else 0.0
+    return (float(fact.access_count), event_time)
+
+
 def _ensure_payload_agent_namespace(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
     normalized["agent_namespace"] = _resolved_agent_namespace(normalized.get("agent_namespace"))
@@ -1308,17 +1313,51 @@ class SupabaseTransport:
         limit: int = 50,
         agent_namespace: str | None = None,
     ) -> list[Fact]:
-        response = await self._run(
-            lambda: self._schema_rpc(
-                "search_facts",
-                {
-                    "category_filter": category,
-                    "tag_filter": tags,
-                    "limit_count": limit,
-                },
-            ).execute()
-        )
-        facts = [Fact.model_validate(item) for item in response.data or []]
+        normalized_tags = [str(tag).strip() for tag in (tags or []) if str(tag).strip()]
+        candidate_limit = limit if not normalized_tags else max(limit * 25, 500)
+
+        async def _run_fact_search(tag_filter: str | None) -> list[Fact]:
+            response = await self._run(
+                lambda: self._schema_rpc(
+                    "search_facts",
+                    {
+                        "category_filter": category,
+                        "tag_filter": tag_filter,
+                        "limit_count": candidate_limit,
+                    },
+                ).execute()
+            )
+            return [Fact.model_validate(item) for item in response.data or []]
+
+        if not normalized_tags:
+            facts = await _run_fact_search(None)
+        elif len(normalized_tags) == 1:
+            facts = await _run_fact_search(normalized_tags[0])
+        else:
+            per_tag_results = await asyncio.gather(*(_run_fact_search(tag) for tag in normalized_tags))
+            merged: dict[str, Fact] = {}
+            occurrences: dict[str, int] = {}
+            for result in per_tag_results:
+                seen_in_result: set[str] = set()
+                for fact in result:
+                    if fact.id is None:
+                        continue
+                    fact_id = str(fact.id)
+                    merged[fact_id] = fact
+                    if fact_id in seen_in_result:
+                        continue
+                    occurrences[fact_id] = occurrences.get(fact_id, 0) + 1
+                    seen_in_result.add(fact_id)
+            required_occurrences = len(normalized_tags)
+            facts = [
+                fact
+                for fact_id, fact in merged.items()
+                if occurrences.get(fact_id, 0) >= required_occurrences
+            ]
+            facts.sort(key=_fact_search_sort_key, reverse=True)
+
+        if normalized_tags:
+            facts = [fact for fact in facts if all(tag in fact.tags for tag in normalized_tags)]
         return _filter_records_by_agent_namespace(facts, agent_namespace)[:limit]
 
     async def insert_fact_history(self, history: FactHistory) -> FactHistory:

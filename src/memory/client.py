@@ -96,6 +96,14 @@ class MemoryClient:
         self.transport = transport
         self.embedding = embedding
         self.emotions = emotions
+        self._session_stat_locks: dict[str, asyncio.Lock] = {}
+
+    def _session_stats_lock(self, session_id: str) -> asyncio.Lock:
+        lock = self._session_stat_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_stat_locks[session_id] = lock
+        return lock
 
     async def _safe_embed_text(self, text: str) -> list[float] | None:
         try:
@@ -1109,35 +1117,36 @@ class MemoryClient:
         return await self.transport.health_check()
 
     async def _update_session_stats(self, session_id: str, episodes: list[Episode]) -> None:
-        session = await self.transport.get_session(session_id)
-        if session is None:
-            return
+        async with self._session_stats_lock(session_id):
+            session = await self.transport.get_session(session_id)
+            if session is None:
+                return
 
-        new_message_count = session.message_count + len(episodes)
-        user_increments = sum(1 for episode in episodes if episode.role is EpisodeRole.USER)
-        new_user_count = session.user_message_count + user_increments
+            new_message_count = session.message_count + len(episodes)
+            user_increments = sum(1 for episode in episodes if episode.role is EpisodeRole.USER)
+            new_user_count = session.user_message_count + user_increments
 
-        previous_avg = session.avg_emotional_intensity or 0.0
-        previous_total = previous_avg * session.message_count
-        new_total = previous_total + sum(episode.emotional_intensity for episode in episodes)
-        avg_intensity = new_total / new_message_count if new_message_count else 0.0
+            previous_avg = session.avg_emotional_intensity or 0.0
+            previous_total = previous_avg * session.message_count
+            new_total = previous_total + sum(episode.emotional_intensity for episode in episodes)
+            avg_intensity = new_total / new_message_count if new_message_count else 0.0
 
-        dominant_counter = Counter(session.dominant_emotion_counts)
-        if not dominant_counter and session.dominant_emotions:
-            dominant_counter.update(session.dominant_emotions)
-        dominant_counter.update(
-            episode.dominant_emotion for episode in episodes if episode.dominant_emotion
-        )
-        top_dominant = [emotion for emotion, _ in dominant_counter.most_common(3)]
-        dominant_emotion_counts = dict(dominant_counter)
+            dominant_counter = Counter(session.dominant_emotion_counts)
+            if not dominant_counter and session.dominant_emotions:
+                dominant_counter.update(session.dominant_emotions)
+            dominant_counter.update(
+                episode.dominant_emotion for episode in episodes if episode.dominant_emotion
+            )
+            top_dominant = [emotion for emotion, _ in dominant_counter.most_common(3)]
+            dominant_emotion_counts = dict(dominant_counter)
 
-        await self.transport.update_session(
-            session_id,
-            {
-                "message_count": new_message_count,
-                "user_message_count": new_user_count,
-                "avg_emotional_intensity": avg_intensity,
-                "dominant_emotions": top_dominant,
-                "dominant_emotion_counts": dominant_emotion_counts,
-            },
-        )
+            await self.transport.update_session(
+                session_id,
+                {
+                    "message_count": new_message_count,
+                    "user_message_count": new_user_count,
+                    "avg_emotional_intensity": avg_intensity,
+                    "dominant_emotions": top_dominant,
+                    "dominant_emotion_counts": dominant_emotion_counts,
+                },
+            )
