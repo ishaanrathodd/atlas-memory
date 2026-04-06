@@ -107,9 +107,10 @@ def _apply_env_aliases() -> None:
 
 
 def load_hermes_env(hermes_home: str | Path | None = None) -> dict[str, str]:
-    root = Path(hermes_home or os.getenv("HERMES_HOME") or DEFAULT_HERMES_HOME).expanduser()
+    raw_root = Path(hermes_home or os.getenv("HERMES_HOME") or DEFAULT_HERMES_HOME).expanduser()
+    env_path = raw_root if raw_root.name == ".env" else raw_root / ".env"
+    root = env_path.parent
     os.environ["HERMES_HOME"] = str(root)
-    env_path = root / ".env"
     loaded: dict[str, str] = {}
     if not env_path.exists():
         _apply_env_aliases()
@@ -132,7 +133,8 @@ def load_hermes_env(hermes_home: str | Path | None = None) -> dict[str, str]:
     return loaded
 
 
-def build_client() -> MemoryClient:
+def build_client(hermes_home: str | Path | None = None) -> MemoryClient:
+    load_hermes_env(hermes_home)
     embedding = OpenAIEmbeddingProvider()
     transport = SupabaseTransport(embedding_provider=embedding)
     return MemoryClient(

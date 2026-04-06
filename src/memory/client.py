@@ -1552,12 +1552,19 @@ class MemoryClient:
         existing = await self.transport.list_heartbeat_opportunities(
             limit=5,
             agent_namespace=agent_namespace,
-            statuses=[HeartbeatOpportunityStatus.PENDING.value],
             kinds=[HeartbeatOpportunityKind.CONVERSATION_DROPOFF.value],
             session_id=str(candidate.session_id),
         )
         for record in existing:
             if record.opportunity_key == candidate.opportunity_key:
+                if record.status in {
+                    HeartbeatOpportunityStatus.PENDING,
+                    HeartbeatOpportunityStatus.SUPPRESSED,
+                    HeartbeatOpportunityStatus.DISPATCHED,
+                }:
+                    return record
+                if record.status == HeartbeatOpportunityStatus.CANCELLED:
+                    break
                 return record
         return await self.transport.upsert_heartbeat_opportunity(candidate)
 
@@ -1578,7 +1585,6 @@ class MemoryClient:
         existing = await self.transport.list_heartbeat_opportunities(
             limit=max(limit * 2, 20),
             agent_namespace=agent_namespace,
-            statuses=[HeartbeatOpportunityStatus.PENDING.value],
             kinds=[HeartbeatOpportunityKind.PROMISE_FOLLOWUP.value],
         )
         existing_by_key = {item.opportunity_key: item for item in existing}
@@ -1597,7 +1603,16 @@ class MemoryClient:
             open_keys.add(candidate.opportunity_key)
             existing_record = existing_by_key.get(candidate.opportunity_key)
             if existing_record is not None:
-                stored.append(existing_record)
+                if existing_record.status in {
+                    HeartbeatOpportunityStatus.PENDING,
+                    HeartbeatOpportunityStatus.SUPPRESSED,
+                    HeartbeatOpportunityStatus.DISPATCHED,
+                }:
+                    stored.append(existing_record)
+                    continue
+                if existing_record.status == HeartbeatOpportunityStatus.CANCELLED:
+                    existing_record = None
+            if existing_record is not None:
                 continue
             stored.append(await self.transport.upsert_heartbeat_opportunity(candidate))
 

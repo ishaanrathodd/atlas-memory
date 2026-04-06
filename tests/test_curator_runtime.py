@@ -3053,6 +3053,53 @@ def test_load_hermes_env_resolves_shell_references(tmp_path: Path, monkeypatch: 
     assert os.environ["GLM_API_KEY"] == "glm-secret"
 
 
+def test_load_hermes_env_accepts_direct_env_file_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    env_path = hermes_home / ".env"
+    env_path.write_text(
+        "SUPABASE_SERVICE_KEY=svc-secret\n"
+        "MEMORY_SUPABASE_URL=https://example.supabase.co\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("MEMORY_SUPABASE_URL", raising=False)
+    monkeypatch.delenv("MEMORY_SUPABASE_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+
+    loaded = runtime.load_hermes_env(env_path)
+
+    assert loaded["SUPABASE_SERVICE_KEY"] == "svc-secret"
+    assert os.environ["HERMES_HOME"] == str(hermes_home)
+    assert os.environ["MEMORY_SUPABASE_KEY"] == "svc-secret"
+
+
+def test_build_client_loads_hermes_env_before_constructing_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[object] = []
+
+    class FakeEmbedding:
+        pass
+
+    class FakeTransport:
+        def __init__(self, *, embedding_provider) -> None:
+            calls.append(("transport", embedding_provider))
+
+    class FakeClient:
+        def __init__(self, *, transport, embedding, emotions) -> None:
+            calls.append(("client", transport, embedding, emotions))
+
+    monkeypatch.setattr(runtime, "load_hermes_env", lambda hermes_home=None: calls.append(("env", hermes_home)) or {})
+    monkeypatch.setattr(runtime, "OpenAIEmbeddingProvider", FakeEmbedding)
+    monkeypatch.setattr(runtime, "SupabaseTransport", FakeTransport)
+    monkeypatch.setattr(runtime, "MemoryClient", FakeClient)
+
+    client = runtime.build_client("/tmp/hermes-home")
+
+    assert calls[0] == ("env", "/tmp/hermes-home")
+    assert calls[1][0] == "transport"
+    assert calls[2][0] == "client"
+    assert client is not None
+
+
 def test_apply_env_aliases_supports_legacy_atlas_names(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
         "MEMORY_SUPABASE_URL",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from memory.bridge_cli import _ensure_live_session
@@ -57,6 +57,84 @@ def _merge_session_updates(existing_session: Any, updates: dict[str, Any]) -> di
     merged_model_config.update(incoming_copy)
     merged["model_config"] = merged_model_config
     return merged
+
+
+def _session_routing_payload(session: Any) -> dict[str, Any]:
+    model_config = getattr(session, "session_model_config", None)
+    if model_config is None:
+        model_config = getattr(session, "model_config", None)
+    if isinstance(model_config, dict):
+        routing = model_config.get("routing")
+        if isinstance(routing, dict):
+            return dict(routing)
+    return {}
+
+
+async def _resolve_live_route_for_session(
+    client,
+    *,
+    session_id: str,
+    agent_namespace: str | None = None,
+) -> dict[str, Any] | None:
+    session = await client.transport.get_session(session_id)
+    if session is None:
+        return None
+
+    routing = _session_routing_payload(session)
+    platform = str(
+        routing.get("platform")
+        or getattr(getattr(session, "platform", None), "value", getattr(session, "platform", None))
+        or ""
+    ).strip().lower()
+    chat_id = str(routing.get("chat_id") or "").strip()
+    if platform and chat_id:
+        origin: dict[str, Any] = {"platform": platform, "chat_id": chat_id}
+        thread_id = str(routing.get("thread_id") or "").strip()
+        if thread_id:
+            origin["thread_id"] = thread_id
+        return {"origin": origin}
+
+    session_key = str(routing.get("session_key") or "").strip()
+    if not session_key:
+        return None
+
+    route_result = await find_live_session_route(
+        client,
+        platform=platform or None,
+        chat_id=chat_id or None,
+        thread_id=routing.get("thread_id"),
+        session_key=session_key,
+        limit=400,
+        agent_namespace=agent_namespace,
+    )
+    route_payload = route_result.get("route") if isinstance(route_result, dict) else None
+    return route_payload if isinstance(route_payload, dict) else None
+
+
+def _session_last_activity_at(session: Any) -> datetime | None:
+    for field in ("updated_at", "ended_at", "started_at"):
+        value = getattr(session, field, None)
+        if isinstance(value, datetime):
+            return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _should_suppress_non_routable_opportunity(
+    *,
+    opportunity: Any,
+    session: Any,
+    presence: Any,
+    now: datetime,
+    stale_after: timedelta = timedelta(hours=6),
+) -> bool:
+    if session is None or getattr(opportunity, "session_id", None) is None:
+        return False
+    if presence is not None and str(getattr(presence, "active_session_id", "") or "") == str(opportunity.session_id):
+        return False
+    last_activity = _session_last_activity_at(session)
+    if last_activity is None:
+        return False
+    return (now - last_activity) >= stale_after
 
 
 async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
@@ -233,6 +311,8 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
 
     if operation == "heartbeat-poll":
         now = _parse_request_datetime(request.get("now"))
+        poll_now = now or datetime.now(timezone.utc)
+        require_routable = bool(request.get("require_routable"))
         presence = await client.refresh_presence(
             agent_namespace=request.get("agent_namespace"),
             now=now,
@@ -290,6 +370,42 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
                 handoff_tone=matching_handoff.emotional_tone if matching_handoff is not None else None,
                 presence=presence if presence is not None and str(presence.active_session_id or "") == session_id else None,
             )
+        routable_session_ids: set[str] = set()
+        suppressed_non_routable: list[str] = []
+        if require_routable:
+            filtered_opportunities = []
+            session_cache: dict[str, Any | None] = {}
+            for opportunity in opportunities:
+                opportunity_session_id = str(opportunity.session_id or "").strip()
+                if not opportunity_session_id:
+                    continue
+                route = await _resolve_live_route_for_session(
+                    client,
+                    session_id=opportunity_session_id,
+                    agent_namespace=request.get("agent_namespace"),
+                )
+                if route is not None:
+                    filtered_opportunities.append(opportunity)
+                    routable_session_ids.add(opportunity_session_id)
+                    continue
+                session = session_cache.get(opportunity_session_id)
+                if session is None and opportunity_session_id not in session_cache:
+                    session = await client.transport.get_session(opportunity_session_id)
+                    session_cache[opportunity_session_id] = session
+                if _should_suppress_non_routable_opportunity(
+                    opportunity=opportunity,
+                    session=session,
+                    presence=presence,
+                    now=poll_now,
+                ):
+                    await client.transition_heartbeat_opportunity(
+                        opportunity.opportunity_key,
+                        status="suppressed",
+                        agent_namespace=request.get("agent_namespace"),
+                    )
+                    suppressed_non_routable.append(opportunity.opportunity_key)
+                    continue
+            opportunities = filtered_opportunities
         due = rank_due_opportunities(
             opportunities,
             state=presence,
@@ -307,6 +423,8 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
                 "rhythm_profile": rhythm_profile,
                 "response_profile": response_profile,
                 "thread_emotion_profiles": thread_emotion_profiles,
+                "routable_session_ids": sorted(routable_session_ids),
+                "suppressed_non_routable": suppressed_non_routable,
                 "created_opportunity": dropoff.model_dump(mode="json") if dropoff is not None else None,
                 "promise_followups": [item.model_dump(mode="json") for item in promise_followups],
                 "due_opportunities": due,

@@ -730,6 +730,106 @@ async def test_ensure_promise_followup_opportunities_derives_from_open_commitmen
 
 
 @pytest.mark.asyncio
+async def test_ensure_promise_followup_opportunities_does_not_recreate_suppressed_record() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    now = datetime.now(timezone.utc)
+
+    await client.add_commitment(
+        kind="follow_up",
+        statement="Check whether the Gmail reconnect was finished.",
+        commitment_key="gmail-reconnect-followup",
+        first_committed_at=now - timedelta(days=2),
+        last_observed_at=now - timedelta(days=1),
+        priority_score=0.81,
+        confidence=0.9,
+        agent_namespace="main",
+    )
+    suppressed = HeartbeatOpportunity(
+        id=uuid4(),
+        agent_namespace="main",
+        opportunity_key="followup:gmail-reconnect-followup",
+        kind="promise_followup",
+        status="suppressed",
+        session_id=None,
+        reason_summary="Still need to check the Gmail reconnect.",
+        earliest_send_at=now - timedelta(hours=1),
+        latest_useful_at=now + timedelta(days=2),
+        priority_score=0.8,
+        annoyance_risk=0.2,
+        desired_pressure=0.4,
+        warmth_target=0.6,
+        requires_authored_llm_message=True,
+        requires_main_agent_reasoning=False,
+        source_refs=[],
+        cancel_conditions=[],
+        created_at=now - timedelta(hours=2),
+        updated_at=now - timedelta(hours=1),
+        last_scored_at=now - timedelta(hours=1),
+    )
+    transport.heartbeat_opportunities.append(suppressed)
+
+    opportunities = await client.ensure_promise_followup_opportunities(
+        agent_namespace="main",
+        now=now,
+    )
+
+    assert len(opportunities) == 1
+    assert opportunities[0].id == suppressed.id
+    assert len(transport.heartbeat_opportunities) == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_conversation_dropoff_opportunity_does_not_recreate_suppressed_record() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    await client.record_presence_event(
+        role="assistant",
+        session_id=str(session.id),
+        platform="telegram",
+        occurred_at=now - timedelta(minutes=6),
+        agent_namespace="main",
+    )
+    suppressed = HeartbeatOpportunity(
+        id=uuid4(),
+        agent_namespace="main",
+        opportunity_key=f"dropoff:{session.id}",
+        kind="conversation_dropoff",
+        status="suppressed",
+        session_id=session.id,
+        reason_summary="The user vanished mid-thread.",
+        earliest_send_at=now - timedelta(minutes=3),
+        latest_useful_at=now + timedelta(minutes=5),
+        priority_score=0.8,
+        annoyance_risk=0.1,
+        desired_pressure=0.4,
+        warmth_target=0.6,
+        requires_authored_llm_message=True,
+        requires_main_agent_reasoning=False,
+        source_refs=[],
+        cancel_conditions=[],
+        created_at=now - timedelta(minutes=4),
+        updated_at=now - timedelta(minutes=3),
+        last_scored_at=now - timedelta(minutes=3),
+    )
+    transport.heartbeat_opportunities.append(suppressed)
+
+    opportunity = await client.ensure_conversation_dropoff_opportunity(
+        agent_namespace="main",
+        now=now,
+        min_delay=timedelta(minutes=2),
+        max_delay=timedelta(minutes=20),
+    )
+
+    assert opportunity is not None
+    assert opportunity.id == suppressed.id
+    assert len(transport.heartbeat_opportunities) == 1
+
+
+@pytest.mark.asyncio
 async def test_create_background_task_completion_opportunity_persists_record() -> None:
     transport = InMemoryTransport()
     client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
