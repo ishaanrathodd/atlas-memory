@@ -247,3 +247,37 @@ def test_hermes_provider_copies_remain_identical() -> None:
 
     for method_name in ("sync_turn", "_ensure_session_synced", "_sync_worker"):
         assert _method_source(atlas_copy, method_name) == _method_source(hermes_copy, method_name)
+
+
+def test_atlas_bridge_shutdown_closes_stdout_handle(tmp_path: Path) -> None:
+    bridge = _MODULE._AtlasBridgeClient(hermes_home=str(tmp_path))
+
+    class DummyPipe:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.stdin = DummyPipe()
+            self.stdout = DummyPipe()
+            self.terminated = False
+            self.waited = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float | None = None) -> None:
+            self.waited = True
+
+    process = DummyProcess()
+    bridge._process = process
+
+    bridge._shutdown_locked()
+
+    assert process.stdin.closed is True
+    assert process.stdout.closed is True
+    assert process.terminated is True
+    assert process.waited is True

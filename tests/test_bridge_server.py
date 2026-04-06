@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from memory.bridge_server import _merge_session_updates, _resolve_live_route_for_session, _should_suppress_non_routable_opportunity
+from memory.bridge_server import (
+    _live_hot_curator_enabled,
+    _merge_session_updates,
+    _resolve_live_route_for_session,
+    _should_suppress_non_routable_opportunity,
+)
 
 
 def test_merge_session_updates_preserves_existing_model_config_fields() -> None:
@@ -87,3 +92,13 @@ def test_should_not_suppress_non_routable_active_session() -> None:
         presence=presence,
         now=now,
     ) is False
+
+
+def test_live_hot_curator_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MEMORY_ENABLE_LIVE_HOT_CURATOR", raising=False)
+    assert _live_hot_curator_enabled() is False
+
+
+def test_live_hot_curator_enabled_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MEMORY_ENABLE_LIVE_HOT_CURATOR", "1")
+    assert _live_hot_curator_enabled() is True

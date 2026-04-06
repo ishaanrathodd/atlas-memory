@@ -261,6 +261,11 @@ class _AtlasBridgeClient:
             except Exception:
                 pass
             try:
+                if process.stdout:
+                    process.stdout.close()
+            except Exception:
+                pass
+            try:
                 process.terminate()
                 process.wait(timeout=2.0)
             except Exception:

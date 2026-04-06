@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -57,6 +58,15 @@ def _merge_session_updates(existing_session: Any, updates: dict[str, Any]) -> di
     merged_model_config.update(incoming_copy)
     merged["model_config"] = merged_model_config
     return merged
+
+
+def _live_hot_curator_enabled() -> bool:
+    return str(os.environ.get("MEMORY_ENABLE_LIVE_HOT_CURATOR", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _session_routing_payload(session: Any) -> dict[str, Any]:
@@ -236,11 +246,20 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
             platform=str(request.get("platform") or "local"),
             agent_namespace=request.get("agent_namespace"),
         )
-        curator = await client.curate_live_continuity(
-            str(request.get("memory_session_id") or ""),
-            agent_namespace=request.get("agent_namespace"),
-            mode="hot",
-        )
+        if _live_hot_curator_enabled():
+            curator = await client.curate_live_continuity(
+                str(request.get("memory_session_id") or ""),
+                agent_namespace=request.get("agent_namespace"),
+                mode="hot",
+            )
+        else:
+            curator = {
+                "curated": False,
+                "mode": "hot",
+                "hot_ran": False,
+                "warm_ran": False,
+                "skipped": "disabled",
+            }
         return {
             "success": True,
             "result": {
