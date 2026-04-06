@@ -8,7 +8,21 @@ from uuid import uuid4
 import pytest
 
 from memory.embedding import MockEmbeddingProvider
-from memory.models import Episode, EpisodeRole, Fact, FactCategory, Platform, Session, VECTOR_DIMENSIONS
+from memory.models import (
+    BackgroundJob,
+    BackgroundJobStatus,
+    Episode,
+    EpisodeRole,
+    Fact,
+    FactCategory,
+    HeartbeatDispatch,
+    HeartbeatOpportunity,
+    HeartbeatOpportunityKind,
+    Platform,
+    PresenceState,
+    Session,
+    VECTOR_DIMENSIONS,
+)
 from memory.transport import (
     LocalTransport,
     RemoteTransport,
@@ -218,6 +232,236 @@ async def test_transport_list_sessions_applies_platform_filter() -> None:
     actions = fake_client.mapping["sessions"].actions
     assert ("eq", ("platform", "telegram")) in actions
     assert ("order", ("started_at", True)) in actions
+
+
+@pytest.mark.asyncio
+async def test_transport_upsert_presence_state_round_trips_current_row() -> None:
+    now = datetime.now(timezone.utc)
+    existing_id = str(uuid4())
+    fake_client = FakeSupabaseClient(
+        {
+            "presence_state": FakeQuery(
+                [
+                    {
+                        "id": existing_id,
+                        "agent_namespace": "main",
+                        "active_platform": "telegram",
+                        "last_user_message_at": now.isoformat(),
+                        "conversation_energy": 0.5,
+                        "tension_score": 0.1,
+                        "warmth_score": 0.7,
+                        "user_disappeared_mid_thread": False,
+                        "recent_proactive_count_24h": 0,
+                        "updated_at": now.isoformat(),
+                    }
+                ]
+            ),
+        }
+    )
+    transport = SupabaseTransport(client=fake_client)
+    state = PresenceState(
+        agent_namespace="main",
+        active_platform="telegram",
+        last_user_message_at=now,
+        conversation_energy=0.61,
+        warmth_score=0.72,
+        updated_at=now,
+    )
+
+    stored = await transport.upsert_presence_state(state)
+    fetched = await transport.get_presence_state(agent_namespace="main")
+
+    assert stored.agent_namespace == "main"
+    assert fetched is not None
+    assert fetched.active_platform is not None
+    assert fetched.active_platform.value == "telegram"
+    actions = fake_client.mapping["presence_state"].actions
+    assert ("eq", ("agent_namespace", "main")) in actions
+    assert any(action[0] == "update" for action in actions)
+
+
+@pytest.mark.asyncio
+async def test_transport_upserts_lists_and_transitions_background_jobs() -> None:
+    now = datetime.now(timezone.utc)
+    session_id = str(uuid4())
+    job_id = str(uuid4())
+    fake_client = FakeSupabaseClient(
+        {
+            "background_jobs": FakeQuery(
+                [
+                    {
+                        "id": job_id,
+                        "agent_namespace": "main",
+                        "job_key": "bg-trace-1",
+                        "kind": "trace",
+                        "status": "queued",
+                        "session_id": session_id,
+                        "title": "Trace the heartbeat route",
+                        "description": "Follow the route resolution path.",
+                        "priority_score": 0.74,
+                        "source_refs": ["issue:route"],
+                        "result_refs": [],
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                    }
+                ]
+            ),
+        }
+    )
+    transport = SupabaseTransport(client=fake_client)
+    job = BackgroundJob(
+        agent_namespace="main",
+        job_key="bg-trace-1",
+        kind="trace",
+        status=BackgroundJobStatus.QUEUED,
+        session_id=session_id,
+        title="Trace the heartbeat route",
+        description="Follow the route resolution path.",
+        priority_score=0.74,
+        source_refs=["issue:route"],
+        created_at=now,
+        updated_at=now,
+    )
+
+    stored = await transport.upsert_background_job(job)
+    listed = await transport.list_background_jobs(
+        agent_namespace="main",
+        statuses=["queued"],
+        session_id=session_id,
+        job_key="bg-trace-1",
+    )
+    transitioned = await transport.transition_background_job(
+        "bg-trace-1",
+        status="completed",
+        agent_namespace="main",
+        completion_summary="Finished tracing the route.",
+        result_refs=["file:dispatch.py"],
+        completed_at=now,
+        updated_at=now,
+    )
+
+    assert stored.job_key == "bg-trace-1"
+    assert len(listed) == 1
+    assert listed[0].kind.value == "trace"
+    assert transitioned is not None
+    actions = fake_client.mapping["background_jobs"].actions
+    assert ("in", ("status", ["queued"])) in actions
+    assert ("eq", ("session_id", session_id)) in actions
+    assert ("eq", ("job_key", "bg-trace-1")) in actions
+    assert any(action[0] == "update" for action in actions)
+
+
+@pytest.mark.asyncio
+async def test_transport_lists_and_cancels_heartbeat_opportunities() -> None:
+    now = datetime.now(timezone.utc)
+    session_id = str(uuid4())
+    opportunity_id = str(uuid4())
+    fake_client = FakeSupabaseClient(
+        {
+            "heartbeat_opportunities": FakeQuery(
+                [
+                    {
+                        "id": opportunity_id,
+                        "agent_namespace": "main",
+                        "opportunity_key": f"dropoff:{session_id}",
+                        "kind": "conversation_dropoff",
+                        "status": "pending",
+                        "session_id": session_id,
+                        "reason_summary": "The user disappeared mid-thread.",
+                        "earliest_send_at": now.isoformat(),
+                        "latest_useful_at": (now.replace(microsecond=0)).isoformat(),
+                        "priority_score": 0.8,
+                        "annoyance_risk": 0.2,
+                        "desired_pressure": 0.35,
+                        "warmth_target": 0.72,
+                        "requires_authored_llm_message": True,
+                        "requires_main_agent_reasoning": False,
+                        "source_refs": [f"session:{session_id}"],
+                        "cancel_conditions": ["user_message"],
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                        "last_scored_at": now.isoformat(),
+                    }
+                ]
+            )
+        }
+    )
+    transport = SupabaseTransport(client=fake_client)
+
+    listed = await transport.list_heartbeat_opportunities(
+        agent_namespace="main",
+        statuses=["pending"],
+        kinds=[HeartbeatOpportunityKind.CONVERSATION_DROPOFF.value],
+        session_id=session_id,
+    )
+    cancelled = await transport.cancel_heartbeat_opportunity(
+        f"dropoff:{session_id}",
+        agent_namespace="main",
+    )
+
+    assert len(listed) == 1
+    assert isinstance(listed[0], HeartbeatOpportunity)
+    assert cancelled is True
+    actions = fake_client.mapping["heartbeat_opportunities"].actions
+    assert ("in", ("status", ["pending"])) in actions
+    assert ("in", ("kind", ["conversation_dropoff"])) in actions
+    assert ("eq", ("session_id", session_id)) in actions
+
+
+@pytest.mark.asyncio
+async def test_transport_inserts_and_lists_heartbeat_dispatches() -> None:
+    now = datetime.now(timezone.utc)
+    session_id = str(uuid4())
+    dispatch_id = str(uuid4())
+    fake_client = FakeSupabaseClient(
+        {
+            "heartbeat_dispatches": FakeQuery(
+                [
+                    {
+                        "id": dispatch_id,
+                        "agent_namespace": "main",
+                        "opportunity_key": f"dropoff:{session_id}",
+                        "opportunity_kind": "conversation_dropoff",
+                        "session_id": session_id,
+                        "dispatch_status": "sent",
+                        "target": "telegram:123",
+                        "send_score": 0.81,
+                        "response_preview": "hey, where'd you disappear to?",
+                        "attempted_at": now.isoformat(),
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                    }
+                ]
+            )
+        }
+    )
+    transport = SupabaseTransport(client=fake_client)
+    dispatch = HeartbeatDispatch(
+        agent_namespace="main",
+        opportunity_key=f"dropoff:{session_id}",
+        opportunity_kind="conversation_dropoff",
+        session_id=session_id,
+        dispatch_status="sent",
+        target="telegram:123",
+        attempted_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+    stored = await transport.insert_heartbeat_dispatch(dispatch)
+    listed = await transport.list_heartbeat_dispatches(
+        agent_namespace="main",
+        session_id=session_id,
+        statuses=["sent"],
+        since=now,
+    )
+
+    assert stored.opportunity_key == f"dropoff:{session_id}"
+    assert len(listed) == 1
+    actions = fake_client.mapping["heartbeat_dispatches"].actions
+    assert ("in", ("dispatch_status", ["sent"])) in actions
+    assert ("eq", ("session_id", session_id)) in actions
+    assert ("gte", ("attempted_at", now.isoformat())) in actions
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,7 @@ from memory.instance_identity import (
 )
 from memory.models import (
     ActiveState,
+    BackgroundJob,
     CaseEvidenceLink,
     Commitment,
     Correction,
@@ -34,8 +35,11 @@ from memory.models import (
     Episode,
     Fact,
     FactHistory,
+    HeartbeatDispatch,
+    HeartbeatOpportunity,
     MemoryCase,
     Pattern,
+    PresenceState,
     Reflection,
     SessionHandoff,
     Session,
@@ -709,6 +713,85 @@ class MemoryTransport(Protocol):
         agent_namespace: str | None = None,
         exclude_session_id: str | None = None,
     ) -> list[SessionHandoff]: ...
+
+    async def upsert_presence_state(self, state: PresenceState) -> PresenceState: ...
+
+    async def get_presence_state(
+        self,
+        agent_namespace: str | None = None,
+    ) -> PresenceState | None: ...
+
+    async def upsert_background_job(
+        self,
+        job: BackgroundJob,
+    ) -> BackgroundJob: ...
+
+    async def list_background_jobs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        session_id: str | None = None,
+        job_key: str | None = None,
+    ) -> list[BackgroundJob]: ...
+
+    async def transition_background_job(
+        self,
+        job_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+        progress_note: str | None = None,
+        completion_summary: str | None = None,
+        result_refs: list[str] | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> BackgroundJob | None: ...
+
+    async def upsert_heartbeat_opportunity(
+        self,
+        opportunity: HeartbeatOpportunity,
+    ) -> HeartbeatOpportunity: ...
+
+    async def insert_heartbeat_dispatch(
+        self,
+        dispatch: HeartbeatDispatch,
+    ) -> HeartbeatDispatch: ...
+
+    async def list_heartbeat_dispatches(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        opportunity_key: str | None = None,
+        session_id: str | None = None,
+        since: datetime | None = None,
+    ) -> list[HeartbeatDispatch]: ...
+
+    async def list_heartbeat_opportunities(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        kinds: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[HeartbeatOpportunity]: ...
+
+    async def cancel_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool: ...
+
+    async def transition_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+    ) -> bool: ...
 
     async def health_check(self) -> bool: ...
 
@@ -2630,6 +2713,482 @@ class SupabaseTransport:
             handoffs = [handoff for handoff in handoffs if str(handoff.session_id) != normalized_exclude]
         return handoffs[:limit]
 
+    async def upsert_presence_state(self, state: PresenceState) -> PresenceState:
+        payload = _ensure_payload_agent_namespace(_serialize_value(state.model_dump(exclude_none=True)))
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("presence_state")
+                .select("*")
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "presence_state"):
+                logger.info("Memory presence_state table is not available yet; skipping presence upsert.")
+                return state
+            raise
+
+        existing = _first_response_record(response)
+        if existing is not None:
+            payload.setdefault("updated_at", _now_utc().isoformat())
+            response, _ = await self._update_payload(
+                "presence_state",
+                str(existing["id"]),
+                payload,
+                operation="upsert_presence_state",
+            )
+            if response is None:
+                refreshed = await self._fetch_row("presence_state", str(existing["id"]))
+                if refreshed is None:
+                    raise LookupError("upsert_presence_state returned no rows.")
+                return PresenceState.model_validate(_normalize_record(refreshed))
+            return PresenceState.model_validate(_normalize_record(self._require_record(response, operation="upsert_presence_state")))
+
+        response, _ = await self._insert_payload("presence_state", payload, operation="insert_presence_state")
+        return PresenceState.model_validate(_normalize_record(self._require_record(response, operation="insert_presence_state")))
+
+    async def get_presence_state(
+        self,
+        agent_namespace: str | None = None,
+    ) -> PresenceState | None:
+        normalized_namespace = _resolved_agent_namespace(agent_namespace)
+
+        def _query() -> Any:
+            return (
+                self._schema_client()
+                .table("presence_state")
+                .select("*")
+                .eq("agent_namespace", normalized_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "presence_state"):
+                logger.info("Memory presence_state table is not available yet; returning no presence state.")
+                return None
+            raise
+
+        record = _first_response_record(response)
+        if record is None:
+            return None
+        return PresenceState.model_validate(_normalize_record(record))
+
+    async def upsert_background_job(
+        self,
+        job: BackgroundJob,
+    ) -> BackgroundJob:
+        payload = _ensure_payload_agent_namespace(_serialize_value(job.model_dump(exclude_none=True)))
+        job_key = str(payload.get("job_key") or "").strip()
+        if not job_key:
+            raise ValueError("BackgroundJob.job_key is required.")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("background_jobs")
+                .select("*")
+                .eq("job_key", job_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "background_jobs"):
+                logger.info("Memory background_jobs table is not available yet; skipping background job upsert.")
+                return job
+            raise
+
+        existing = _first_response_record(response)
+        if existing is not None:
+            payload.setdefault("updated_at", _now_utc().isoformat())
+            response, _ = await self._update_payload(
+                "background_jobs",
+                str(existing["id"]),
+                payload,
+                operation="upsert_background_job",
+            )
+            if response is None:
+                refreshed = await self._fetch_row("background_jobs", str(existing["id"]))
+                if refreshed is None:
+                    raise LookupError("upsert_background_job returned no rows.")
+                return BackgroundJob.model_validate(_normalize_record(refreshed))
+            return BackgroundJob.model_validate(
+                _normalize_record(self._require_record(response, operation="upsert_background_job"))
+            )
+
+        response, _ = await self._insert_payload(
+            "background_jobs",
+            payload,
+            operation="insert_background_job",
+        )
+        return BackgroundJob.model_validate(
+            _normalize_record(self._require_record(response, operation="insert_background_job"))
+        )
+
+    async def list_background_jobs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        session_id: str | None = None,
+        job_key: str | None = None,
+    ) -> list[BackgroundJob]:
+        requested_statuses = [str(status).strip() for status in (statuses or []) if str(status).strip()]
+        normalized_session_id = str(session_id or "").strip()
+        normalized_job_key = str(job_key or "").strip()
+
+        def _query() -> Any:
+            query = self._schema_client().table("background_jobs").select("*")
+            if requested_statuses:
+                query = query.in_("status", requested_statuses)
+            if normalized_session_id:
+                query = query.eq("session_id", normalized_session_id)
+            if normalized_job_key:
+                query = query.eq("job_key", normalized_job_key)
+            query = query.order("updated_at", desc=True).limit(max(limit * 4, 20))
+            return query.execute()
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "background_jobs"):
+                logger.info("Memory background_jobs table is not available yet; returning empty job list.")
+                return []
+            raise
+
+        jobs = [BackgroundJob.model_validate(_normalize_record(item)) for item in _response_rows(response)]
+        jobs = _filter_records_by_agent_namespace(jobs, agent_namespace)
+        if normalized_session_id:
+            jobs = [item for item in jobs if str(item.session_id or "") == normalized_session_id]
+        if normalized_job_key:
+            jobs = [item for item in jobs if item.job_key == normalized_job_key]
+        return jobs[:limit]
+
+    async def transition_background_job(
+        self,
+        job_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+        progress_note: str | None = None,
+        completion_summary: str | None = None,
+        result_refs: list[str] | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> BackgroundJob | None:
+        normalized_job_key = str(job_key or "").strip()
+        if not normalized_job_key:
+            raise ValueError("job_key is required.")
+
+        existing = await self.list_background_jobs(
+            limit=1,
+            agent_namespace=agent_namespace,
+            job_key=normalized_job_key,
+        )
+        if not existing:
+            return None
+
+        reference_time = updated_at or _now_utc()
+        payload: dict[str, Any] = {
+            "status": str(status or "").strip(),
+            "updated_at": reference_time.isoformat(),
+        }
+        if progress_note is not None:
+            payload["progress_note"] = str(progress_note).strip() or None
+            payload["last_progress_at"] = reference_time.isoformat()
+        if completion_summary is not None:
+            payload["completion_summary"] = str(completion_summary).strip() or None
+        if result_refs is not None:
+            payload["result_refs"] = [str(item).strip() for item in result_refs if str(item).strip()]
+        if started_at is not None:
+            payload["started_at"] = started_at.astimezone(timezone.utc).isoformat()
+        if completed_at is not None:
+            payload["completed_at"] = completed_at.astimezone(timezone.utc).isoformat()
+
+        response, _ = await self._update_payload(
+            "background_jobs",
+            str(existing[0].id),
+            payload,
+            operation="transition_background_job",
+        )
+        if response is None:
+            refreshed = await self._fetch_row("background_jobs", str(existing[0].id))
+            if refreshed is None:
+                return None
+            return BackgroundJob.model_validate(_normalize_record(refreshed))
+        return BackgroundJob.model_validate(
+            _normalize_record(self._require_record(response, operation="transition_background_job"))
+        )
+
+    async def upsert_heartbeat_opportunity(
+        self,
+        opportunity: HeartbeatOpportunity,
+    ) -> HeartbeatOpportunity:
+        payload = _ensure_payload_agent_namespace(_serialize_value(opportunity.model_dump(exclude_none=True)))
+        opportunity_key = str(payload.get("opportunity_key") or "").strip()
+        if not opportunity_key:
+            raise ValueError("HeartbeatOpportunity.opportunity_key is required.")
+        agent_namespace = _resolved_agent_namespace(payload.get("agent_namespace"))
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("heartbeat_opportunities")
+                .select("*")
+                .eq("opportunity_key", opportunity_key)
+                .eq("agent_namespace", agent_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "heartbeat_opportunities"):
+                logger.info("Memory heartbeat_opportunities table is not available yet; skipping heartbeat upsert.")
+                return opportunity
+            raise
+
+        existing = _first_response_record(response)
+        if existing is not None:
+            payload.setdefault("updated_at", _now_utc().isoformat())
+            response, _ = await self._update_payload(
+                "heartbeat_opportunities",
+                str(existing["id"]),
+                payload,
+                operation="upsert_heartbeat_opportunity",
+            )
+            if response is None:
+                refreshed = await self._fetch_row("heartbeat_opportunities", str(existing["id"]))
+                if refreshed is None:
+                    raise LookupError("upsert_heartbeat_opportunity returned no rows.")
+                return HeartbeatOpportunity.model_validate(_normalize_record(refreshed))
+            return HeartbeatOpportunity.model_validate(
+                _normalize_record(self._require_record(response, operation="upsert_heartbeat_opportunity"))
+            )
+
+        response, _ = await self._insert_payload(
+            "heartbeat_opportunities",
+            payload,
+            operation="insert_heartbeat_opportunity",
+        )
+        return HeartbeatOpportunity.model_validate(
+            _normalize_record(self._require_record(response, operation="insert_heartbeat_opportunity"))
+        )
+
+    async def insert_heartbeat_dispatch(
+        self,
+        dispatch: HeartbeatDispatch,
+    ) -> HeartbeatDispatch:
+        payload = _ensure_payload_agent_namespace(_serialize_value(dispatch.model_dump(exclude_none=True)))
+        try:
+            response, _ = await self._insert_payload(
+                "heartbeat_dispatches",
+                payload,
+                operation="insert_heartbeat_dispatch",
+            )
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "heartbeat_dispatches"):
+                logger.info("Memory heartbeat_dispatches table is not available yet; skipping dispatch insert.")
+                return dispatch
+            raise
+        return HeartbeatDispatch.model_validate(
+            _normalize_record(self._require_record(response, operation="insert_heartbeat_dispatch"))
+        )
+
+    async def list_heartbeat_dispatches(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        opportunity_key: str | None = None,
+        session_id: str | None = None,
+        since: datetime | None = None,
+    ) -> list[HeartbeatDispatch]:
+        requested_statuses = [str(status).strip() for status in (statuses or []) if str(status).strip()]
+        normalized_opportunity_key = str(opportunity_key or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        since_iso = since.astimezone(timezone.utc).isoformat() if since is not None else None
+
+        def _query() -> Any:
+            query = self._schema_client().table("heartbeat_dispatches").select("*")
+            if requested_statuses:
+                query = query.in_("dispatch_status", requested_statuses)
+            if normalized_opportunity_key:
+                query = query.eq("opportunity_key", normalized_opportunity_key)
+            if normalized_session_id:
+                query = query.eq("session_id", normalized_session_id)
+            if since_iso:
+                query = query.gte("attempted_at", since_iso)
+            query = query.order("attempted_at", desc=True).limit(max(limit * 4, 20))
+            return query.execute()
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "heartbeat_dispatches"):
+                logger.info("Memory heartbeat_dispatches table is not available yet; returning empty dispatch history.")
+                return []
+            raise
+
+        dispatches = [HeartbeatDispatch.model_validate(_normalize_record(item)) for item in _response_rows(response)]
+        dispatches = _filter_records_by_agent_namespace(dispatches, agent_namespace)
+        if normalized_opportunity_key:
+            dispatches = [item for item in dispatches if item.opportunity_key == normalized_opportunity_key]
+        if normalized_session_id:
+            dispatches = [item for item in dispatches if str(item.session_id or "") == normalized_session_id]
+        return dispatches[:limit]
+
+    async def list_heartbeat_opportunities(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        kinds: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[HeartbeatOpportunity]:
+        requested_statuses = [str(status).strip() for status in (statuses or []) if str(status).strip()]
+        requested_kinds = [str(kind).strip() for kind in (kinds or []) if str(kind).strip()]
+        normalized_session_id = str(session_id or "").strip()
+
+        def _query() -> Any:
+            query = self._schema_client().table("heartbeat_opportunities").select("*")
+            if requested_statuses:
+                query = query.in_("status", requested_statuses)
+            if requested_kinds:
+                query = query.in_("kind", requested_kinds)
+            if normalized_session_id:
+                query = query.eq("session_id", normalized_session_id)
+            query = (
+                query.order("priority_score", desc=True)
+                .order("earliest_send_at", desc=False)
+                .order("created_at", desc=True)
+                .limit(max(limit * 4, 20))
+            )
+            return query.execute()
+
+        try:
+            response = await self._run(_query)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "heartbeat_opportunities"):
+                logger.info("Memory heartbeat_opportunities table is not available yet; returning empty heartbeat list.")
+                return []
+            raise
+
+        opportunities = [HeartbeatOpportunity.model_validate(_normalize_record(item)) for item in _response_rows(response)]
+        opportunities = _filter_records_by_agent_namespace(opportunities, agent_namespace)
+        if normalized_session_id:
+            opportunities = [item for item in opportunities if str(item.session_id or "") == normalized_session_id]
+        return opportunities[:limit]
+
+    async def cancel_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        normalized_key = str(opportunity_key or "").strip()
+        if not normalized_key:
+            return False
+        normalized_namespace = _resolved_agent_namespace(agent_namespace)
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("heartbeat_opportunities")
+                .select("*")
+                .eq("opportunity_key", normalized_key)
+                .eq("agent_namespace", normalized_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "heartbeat_opportunities"):
+                logger.info("Memory heartbeat_opportunities table is not available yet; skipping heartbeat cancel.")
+                return False
+            raise
+
+        existing = _first_response_record(response)
+        if existing is None:
+            return False
+
+        response, _ = await self._update_payload(
+            "heartbeat_opportunities",
+            str(existing["id"]),
+            {
+                "status": "cancelled",
+                "updated_at": _now_utc().isoformat(),
+            },
+            operation="cancel_heartbeat_opportunity",
+        )
+        return response is not None or existing is not None
+
+    async def transition_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        normalized_key = str(opportunity_key or "").strip()
+        normalized_status = str(status or "").strip()
+        if not normalized_key or not normalized_status:
+            return False
+        normalized_namespace = _resolved_agent_namespace(agent_namespace)
+
+        def _find_existing() -> Any:
+            return (
+                self._schema_client()
+                .table("heartbeat_opportunities")
+                .select("*")
+                .eq("opportunity_key", normalized_key)
+                .eq("agent_namespace", normalized_namespace)
+                .limit(1)
+                .execute()
+            )
+
+        try:
+            response = await self._run(_find_existing)
+        except Exception as exc:
+            if _is_missing_relation_error(exc, "heartbeat_opportunities"):
+                logger.info("Memory heartbeat_opportunities table is not available yet; skipping heartbeat transition.")
+                return False
+            raise
+
+        existing = _first_response_record(response)
+        if existing is None:
+            return False
+
+        response, _ = await self._update_payload(
+            "heartbeat_opportunities",
+            str(existing["id"]),
+            {
+                "status": normalized_status,
+                "updated_at": _now_utc().isoformat(),
+                "last_scored_at": _now_utc().isoformat(),
+            },
+            operation="transition_heartbeat_opportunity",
+        )
+        return response is not None or existing is not None
+
     async def health_check(self) -> bool:
         try:
             await self._run(lambda: self._schema_client().table("sessions").select("id").limit(1).execute())
@@ -2917,6 +3476,96 @@ class RemoteTransport:
         agent_namespace: str | None = None,
         exclude_session_id: str | None = None,
     ) -> list[SessionHandoff]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def upsert_presence_state(self, state: PresenceState) -> PresenceState:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def get_presence_state(
+        self,
+        agent_namespace: str | None = None,
+    ) -> PresenceState | None:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def upsert_background_job(
+        self,
+        job: BackgroundJob,
+    ) -> BackgroundJob:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def list_background_jobs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        session_id: str | None = None,
+        job_key: str | None = None,
+    ) -> list[BackgroundJob]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def transition_background_job(
+        self,
+        job_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+        progress_note: str | None = None,
+        completion_summary: str | None = None,
+        result_refs: list[str] | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> BackgroundJob | None:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def upsert_heartbeat_opportunity(
+        self,
+        opportunity: HeartbeatOpportunity,
+    ) -> HeartbeatOpportunity:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def insert_heartbeat_dispatch(
+        self,
+        dispatch: HeartbeatDispatch,
+    ) -> HeartbeatDispatch:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def list_heartbeat_dispatches(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        opportunity_key: str | None = None,
+        session_id: str | None = None,
+        since: datetime | None = None,
+    ) -> list[HeartbeatDispatch]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def list_heartbeat_opportunities(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        kinds: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[HeartbeatOpportunity]:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def cancel_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        raise NotImplementedError("RemoteTransport is not implemented yet.")
+
+    async def transition_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+    ) -> bool:
         raise NotImplementedError("RemoteTransport is not implemented yet.")
 
     async def health_check(self) -> bool:

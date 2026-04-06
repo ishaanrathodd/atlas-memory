@@ -198,6 +198,43 @@ class CommitmentStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class HeartbeatOpportunityKind(str, Enum):
+    CONVERSATION_DROPOFF = "conversation_dropoff"
+    BACKGROUND_TASK_COMPLETION = "background_task_completion"
+    PROMISE_FOLLOWUP = "promise_followup"
+
+
+class HeartbeatOpportunityStatus(str, Enum):
+    PENDING = "pending"
+    SUPPRESSED = "suppressed"
+    DISPATCHED = "dispatched"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
+class HeartbeatDispatchStatus(str, Enum):
+    SENT = "sent"
+    SUPPRESSED = "suppressed"
+    FAILED = "failed"
+
+
+class BackgroundJobKind(str, Enum):
+    TRACE = "trace"
+    RESEARCH = "research"
+    REVIEW = "review"
+    FOLLOW_THROUGH = "follow_through"
+    REPORT = "report"
+    OTHER = "other"
+
+
+class BackgroundJobStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class CorrectionKind(str, Enum):
     FACT_CORRECTION = "fact_correction"
     DIRECTIVE_CLARIFICATION = "directive_clarification"
@@ -606,6 +643,105 @@ class SessionHandoff(MemoryBaseModel):
     @field_validator("source_episode_ids", "source_session_ids", mode="before")
     @classmethod
     def _coerce_null_session_handoff_lists(cls, v: Any) -> Any:
+        return v if v is not None else []
+
+
+class PresenceState(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    active_session_id: UUID | None = None
+    active_platform: PlatformName | None = None
+    last_user_message_at: AwareDatetime | None = None
+    last_agent_message_at: AwareDatetime | None = None
+    last_user_presence_at: AwareDatetime | None = None
+    current_thread_summary: str | None = None
+    conversation_energy: float = Field(default=0.45, ge=0.0, le=1.0)
+    tension_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    warmth_score: float = Field(default=0.6, ge=0.0, le=1.0)
+    user_disappeared_mid_thread: bool = False
+    last_proactive_message_at: AwareDatetime | None = None
+    recent_proactive_count_24h: int = Field(default=0, ge=0)
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+
+    @field_validator("active_platform", mode="before")
+    @classmethod
+    def _normalize_active_platform(
+        cls,
+        value: str | Platform | PlatformName | None,
+    ) -> PlatformName | None:
+        if value is None:
+            return None
+        return normalize_platform(value)
+
+
+class HeartbeatOpportunity(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    opportunity_key: str
+    kind: HeartbeatOpportunityKind
+    status: HeartbeatOpportunityStatus = HeartbeatOpportunityStatus.PENDING
+    session_id: UUID | None = None
+    reason_summary: str
+    earliest_send_at: AwareDatetime
+    latest_useful_at: AwareDatetime | None = None
+    priority_score: float = Field(default=0.5, ge=0.0)
+    annoyance_risk: float = Field(default=0.2, ge=0.0, le=1.0)
+    desired_pressure: float = Field(default=0.35, ge=0.0, le=1.0)
+    warmth_target: float = Field(default=0.7, ge=0.0, le=1.0)
+    requires_authored_llm_message: bool = True
+    requires_main_agent_reasoning: bool = False
+    source_refs: list[str] = Field(default_factory=list)
+    cancel_conditions: list[str] = Field(default_factory=list)
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+    last_scored_at: AwareDatetime | None = None
+
+    @field_validator("source_refs", "cancel_conditions", mode="before")
+    @classmethod
+    def _coerce_null_heartbeat_lists(cls, v: Any) -> Any:
+        return v if v is not None else []
+
+
+class HeartbeatDispatch(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    opportunity_key: str
+    opportunity_kind: HeartbeatOpportunityKind | None = None
+    session_id: UUID | None = None
+    dispatch_status: HeartbeatDispatchStatus
+    target: str | None = None
+    send_score: float | None = Field(default=None, ge=0.0)
+    response_preview: str | None = None
+    failure_reason: str | None = None
+    attempted_at: AwareDatetime
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+
+
+class BackgroundJob(MemoryBaseModel):
+    id: UUID | None = None
+    agent_namespace: str | None = None
+    job_key: str
+    kind: BackgroundJobKind = BackgroundJobKind.OTHER
+    status: BackgroundJobStatus = BackgroundJobStatus.QUEUED
+    session_id: UUID | None = None
+    title: str
+    description: str | None = None
+    priority_score: float = Field(default=0.5, ge=0.0)
+    progress_note: str | None = None
+    completion_summary: str | None = None
+    source_refs: list[str] = Field(default_factory=list)
+    result_refs: list[str] = Field(default_factory=list)
+    created_at: AwareDatetime | None = None
+    updated_at: AwareDatetime | None = None
+    started_at: AwareDatetime | None = None
+    completed_at: AwareDatetime | None = None
+    last_progress_at: AwareDatetime | None = None
+
+    @field_validator("source_refs", "result_refs", mode="before")
+    @classmethod
+    def _coerce_null_background_job_lists(cls, v: Any) -> Any:
         return v if v is not None else []
 
 

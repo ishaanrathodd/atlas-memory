@@ -38,6 +38,18 @@ The next moat is not adding niche fields. The moat is retrieval intelligence:
 - proactive intervention from historical analogues
 - optional graph layer for multi-hop reasoning after core retrieval quality is strong
 
+The next adjacent frontier after retrieval quality is heartbeat/personhood infrastructure:
+
+- off-turn presence
+- heartbeat opportunities
+- authored proactive outreach
+- continuity that feels alive rather than cron-driven
+
+See:
+
+- `docs/HEARTBEAT_PERSONHOOD_ARCHITECTURE.md`
+- `docs/HEARTBEAT_IMPLEMENTATION_PLAN.md`
+
 ## Execution Mode: Solo-First (Private)
 
 Atlas is developed for a single primary user in a private workflow.

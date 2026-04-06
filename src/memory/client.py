@@ -12,10 +12,20 @@ from memory.embedding import EmbeddingProvider
 from memory.enrichment import build_session_handoff, enrich_context as build_enriched_context
 from memory.emotions import EmotionAnalyzer
 from memory.fact_extraction import _content_fingerprint
+from memory.heartbeat import (
+    build_response_profile,
+    build_thread_emotion_profile,
+    build_background_task_completion_opportunity,
+    build_conversation_dropoff_opportunity,
+    build_promise_followup_opportunity,
+)
 from memory.models import (
     ActiveState,
     ActiveStateKind,
     ActiveStateStatus,
+    BackgroundJob,
+    BackgroundJobKind,
+    BackgroundJobStatus,
     Commitment,
     CommitmentKind,
     CommitmentStatus,
@@ -34,8 +44,14 @@ from memory.models import (
     FactCategory,
     FactHistory,
     FactOperation,
+    HeartbeatDispatch,
+    HeartbeatDispatchStatus,
+    HeartbeatOpportunity,
+    HeartbeatOpportunityKind,
+    HeartbeatOpportunityStatus,
     Pattern,
     PatternType,
+    PresenceState,
     Reflection,
     ReflectionKind,
     ReflectionStatus,
@@ -46,6 +62,7 @@ from memory.models import (
     TimelineEvent,
     TimelineEventKind,
 )
+from memory.presence import apply_presence_event, refresh_presence_state
 from memory.transport import MemoryTransport
 
 logger = logging.getLogger(__name__)
@@ -68,6 +85,34 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _heartbeat_text_snippet(value: Any, *, limit: int = 220) -> str:
+    raw = " ".join(str(value or "").strip().split())
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _heartbeat_role_label(role: EpisodeRole | str) -> str:
+    normalized = str(getattr(role, "value", role) or "").strip().lower()
+    if normalized == EpisodeRole.USER.value:
+        return "user"
+    if normalized == EpisodeRole.ASSISTANT.value:
+        return "assistant"
+    return normalized or "unknown"
+
+
+def _background_job_ref(job_key: str) -> str:
+    return f"job:{str(job_key or '').strip()}"
+
+
+def _extract_background_job_ref(source_refs: list[str] | None) -> str | None:
+    for item in source_refs or []:
+        normalized = str(item or "").strip()
+        if normalized.startswith("job:") and len(normalized) > 4:
+            return normalized[4:]
+    return None
 
 
 def _warm_curator_event_key(session: Session, message_count: int) -> str:
@@ -841,6 +886,748 @@ class MemoryClient:
         if handoff is None:
             return None
         return await self.transport.upsert_session_handoff(handoff)
+
+    async def upsert_presence_state(self, state: PresenceState) -> PresenceState:
+        return await self.transport.upsert_presence_state(state)
+
+    async def get_presence_state(
+        self,
+        *,
+        agent_namespace: str | None = None,
+    ) -> PresenceState | None:
+        return await self.transport.get_presence_state(agent_namespace=agent_namespace)
+
+    async def record_presence_event(
+        self,
+        *,
+        role: str,
+        session_id: str | None = None,
+        platform: str | None = None,
+        occurred_at: datetime | None = None,
+        agent_namespace: str | None = None,
+        thread_summary: str | None = None,
+        proactive: bool = False,
+    ) -> PresenceState:
+        current = await self.transport.get_presence_state(agent_namespace=agent_namespace)
+        updated = apply_presence_event(
+            current,
+            role=role,
+            occurred_at=occurred_at or _utcnow(),
+            agent_namespace=agent_namespace,
+            session_id=session_id,
+            platform=platform,
+            thread_summary=thread_summary,
+            proactive=proactive,
+        )
+        stored = await self.transport.upsert_presence_state(updated)
+        if str(role or "").strip().lower() == EpisodeRole.USER.value and session_id:
+            await self.transport.cancel_heartbeat_opportunity(
+                f"dropoff:{session_id}",
+                agent_namespace=agent_namespace,
+            )
+        return stored
+
+    async def refresh_presence(
+        self,
+        *,
+        agent_namespace: str | None = None,
+        now: datetime | None = None,
+        dropoff_after: timedelta = timedelta(minutes=2),
+    ) -> PresenceState | None:
+        current = await self.transport.get_presence_state(agent_namespace=agent_namespace)
+        updated = refresh_presence_state(current, now=now or _utcnow(), dropoff_after=dropoff_after)
+        if updated is None:
+            return None
+        return await self.transport.upsert_presence_state(updated)
+
+    async def upsert_background_job(self, job: BackgroundJob) -> BackgroundJob:
+        return await self.transport.upsert_background_job(job)
+
+    async def list_background_jobs(
+        self,
+        *,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        session_id: str | None = None,
+        job_key: str | None = None,
+    ) -> list[BackgroundJob]:
+        return await self.transport.list_background_jobs(
+            limit=limit,
+            agent_namespace=agent_namespace,
+            statuses=statuses,
+            session_id=session_id,
+            job_key=job_key,
+        )
+
+    async def create_background_job(
+        self,
+        *,
+        title: str,
+        session_id: str | None = None,
+        agent_namespace: str | None = None,
+        kind: str = BackgroundJobKind.OTHER.value,
+        description: str | None = None,
+        priority_score: float = 0.6,
+        source_refs: list[str] | None = None,
+        job_key: str | None = None,
+        now: datetime | None = None,
+    ) -> BackgroundJob:
+        reference_time = now or _utcnow()
+        normalized_title = str(title or "").strip()
+        if not normalized_title:
+            raise ValueError("title is required for background jobs.")
+        normalized_job_key = str(job_key or "").strip() or hashlib.sha1(
+            f"{agent_namespace or ''}:{session_id or ''}:{kind}:{normalized_title}".encode("utf-8")
+        ).hexdigest()[:16]
+        job = BackgroundJob(
+            agent_namespace=agent_namespace,
+            job_key=normalized_job_key,
+            kind=BackgroundJobKind(kind),
+            status=BackgroundJobStatus.QUEUED,
+            session_id=session_id,
+            title=normalized_title,
+            description=str(description or "").strip() or None,
+            priority_score=float(priority_score),
+            source_refs=[str(item).strip() for item in (source_refs or []) if str(item).strip()],
+            created_at=reference_time,
+            updated_at=reference_time,
+        )
+        return await self.transport.upsert_background_job(job)
+
+    async def transition_background_job(
+        self,
+        job_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+        progress_note: str | None = None,
+        completion_summary: str | None = None,
+        result_refs: list[str] | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> BackgroundJob | None:
+        return await self.transport.transition_background_job(
+            job_key,
+            status=status,
+            agent_namespace=agent_namespace,
+            progress_note=progress_note,
+            completion_summary=completion_summary,
+            result_refs=result_refs,
+            started_at=started_at,
+            completed_at=completed_at,
+            updated_at=updated_at,
+        )
+
+    async def complete_background_job(
+        self,
+        job_key: str,
+        *,
+        agent_namespace: str | None = None,
+        completion_summary: str,
+        result_refs: list[str] | None = None,
+        create_heartbeat: bool = True,
+        now: datetime | None = None,
+        priority_score: float = 0.82,
+    ) -> dict[str, Any]:
+        reference_time = now or _utcnow()
+        job = await self.transport.transition_background_job(
+            job_key,
+            status=BackgroundJobStatus.COMPLETED.value,
+            agent_namespace=agent_namespace,
+            completion_summary=completion_summary,
+            result_refs=result_refs,
+            completed_at=reference_time,
+            updated_at=reference_time,
+        )
+        if job is None:
+            return {"job": None, "opportunity": None}
+
+        opportunity = None
+        if create_heartbeat:
+            heartbeat_refs = [_background_job_ref(job.job_key)]
+            heartbeat_refs.extend(str(item).strip() for item in (result_refs or []) if str(item).strip())
+            summary = str(completion_summary or "").strip()
+            reason_summary = summary or f"Finished {job.title}."
+            opportunity = await self.create_background_task_completion_opportunity(
+                session_id=str(job.session_id) if job.session_id is not None else None,
+                reason_summary=reason_summary,
+                agent_namespace=agent_namespace,
+                now=reference_time,
+                priority_score=priority_score,
+                source_refs=heartbeat_refs,
+            )
+        return {"job": job, "opportunity": opportunity}
+
+    async def upsert_heartbeat_opportunity(self, opportunity: HeartbeatOpportunity) -> HeartbeatOpportunity:
+        return await self.transport.upsert_heartbeat_opportunity(opportunity)
+
+    async def list_heartbeat_opportunities(
+        self,
+        *,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        kinds: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[HeartbeatOpportunity]:
+        return await self.transport.list_heartbeat_opportunities(
+            limit=limit,
+            agent_namespace=agent_namespace,
+            statuses=statuses,
+            kinds=kinds,
+            session_id=session_id,
+        )
+
+    async def record_heartbeat_dispatch(
+        self,
+        *,
+        opportunity_key: str,
+        dispatch_status: str,
+        agent_namespace: str | None = None,
+        opportunity_kind: str | None = None,
+        session_id: str | None = None,
+        target: str | None = None,
+        send_score: float | None = None,
+        response_preview: str | None = None,
+        failure_reason: str | None = None,
+        attempted_at: datetime | None = None,
+    ) -> HeartbeatDispatch:
+        reference_time = attempted_at or _utcnow()
+        dispatch = HeartbeatDispatch(
+            agent_namespace=agent_namespace,
+            opportunity_key=str(opportunity_key or "").strip(),
+            opportunity_kind=opportunity_kind,
+            session_id=session_id,
+            dispatch_status=HeartbeatDispatchStatus(dispatch_status),
+            target=str(target or "").strip() or None,
+            send_score=send_score,
+            response_preview=(str(response_preview or "").strip() or None),
+            failure_reason=(str(failure_reason or "").strip() or None),
+            attempted_at=reference_time,
+            created_at=reference_time,
+            updated_at=reference_time,
+        )
+        return await self.transport.insert_heartbeat_dispatch(dispatch)
+
+    async def list_heartbeat_dispatches(
+        self,
+        *,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        opportunity_key: str | None = None,
+        session_id: str | None = None,
+        since: datetime | None = None,
+    ) -> list[HeartbeatDispatch]:
+        return await self.transport.list_heartbeat_dispatches(
+            limit=limit,
+            agent_namespace=agent_namespace,
+            statuses=statuses,
+            opportunity_key=opportunity_key,
+            session_id=session_id,
+            since=since,
+        )
+
+    async def heartbeat_dispatch_cooldown(
+        self,
+        *,
+        opportunity_key: str,
+        agent_namespace: str | None = None,
+        session_id: str | None = None,
+        now: datetime | None = None,
+        same_opportunity_window: timedelta = timedelta(minutes=30),
+        same_session_window: timedelta = timedelta(minutes=12),
+    ) -> dict[str, Any]:
+        reference_time = now or _utcnow()
+        lookback = max(same_opportunity_window, same_session_window)
+        recent_dispatches = await self.transport.list_heartbeat_dispatches(
+            limit=25,
+            agent_namespace=agent_namespace,
+            since=reference_time - lookback,
+        )
+        normalized_key = str(opportunity_key or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+
+        for dispatch in recent_dispatches:
+            if (
+                normalized_key
+                and dispatch.opportunity_key == normalized_key
+                and dispatch.attempted_at >= reference_time - same_opportunity_window
+            ):
+                return {
+                    "blocked": True,
+                    "reason": "same-opportunity-recent",
+                    "dispatch": dispatch.model_dump(mode="json"),
+                }
+            if (
+                normalized_session_id
+                and str(dispatch.session_id or "") == normalized_session_id
+                and dispatch.dispatch_status in {HeartbeatDispatchStatus.SENT, HeartbeatDispatchStatus.SUPPRESSED}
+                and dispatch.attempted_at >= reference_time - same_session_window
+            ):
+                return {
+                    "blocked": True,
+                    "reason": "same-session-recent",
+                    "dispatch": dispatch.model_dump(mode="json"),
+                }
+
+        return {"blocked": False}
+
+    async def cancel_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        return await self.transport.cancel_heartbeat_opportunity(
+            opportunity_key,
+            agent_namespace=agent_namespace,
+        )
+
+    async def transition_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        return await self.transport.transition_heartbeat_opportunity(
+            opportunity_key,
+            status=status,
+            agent_namespace=agent_namespace,
+        )
+
+    def _build_heartbeat_recent_messages(
+        self,
+        episodes: list[Episode],
+        *,
+        limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        recent = episodes[-limit:]
+        return [
+            {
+                "role": _heartbeat_role_label(item.role),
+                "timestamp": item.message_timestamp.isoformat(),
+                "content": _heartbeat_text_snippet(item.content, limit=240),
+                "dominant_emotion": item.dominant_emotion,
+                "emotional_intensity": item.emotional_intensity,
+            }
+            for item in recent
+        ]
+
+    def _build_heartbeat_constraints(
+        self,
+        *,
+        directives: list[Directive],
+        corrections: list[Correction],
+    ) -> dict[str, Any]:
+        directive_rules = [
+            {
+                "statement": _heartbeat_text_snippet(item.content, limit=180),
+                "kind": item.kind.value,
+                "priority_score": item.priority_score,
+            }
+            for item in directives[:4]
+        ]
+        correction_rules = [
+            {
+                "statement": _heartbeat_text_snippet(item.statement, limit=180),
+                "kind": item.kind.value,
+                "target_text": _heartbeat_text_snippet(item.target_text, limit=120) if item.target_text else None,
+            }
+            for item in corrections[:4]
+        ]
+        return {
+            "directive_rules": directive_rules,
+            "correction_rules": correction_rules,
+            "non_negotiables": [item["statement"] for item in [*directive_rules, *correction_rules] if item.get("statement")][:4],
+        }
+
+    def _build_heartbeat_authoring_brief(
+        self,
+        *,
+        opportunity: HeartbeatOpportunity,
+        presence: PresenceState | None,
+        commitments: list[Commitment],
+        recent_messages: list[dict[str, Any]],
+        recent_dispatches: list[HeartbeatDispatch],
+        response_profile: dict[str, Any] | None = None,
+        thread_emotion_profile: dict[str, Any] | None = None,
+        background_job: BackgroundJob | None = None,
+    ) -> dict[str, Any]:
+        last_user_message = next((item for item in reversed(recent_messages) if item.get("role") == "user"), None)
+        last_assistant_message = next((item for item in reversed(recent_messages) if item.get("role") == "assistant"), None)
+        recent_dispatch_count = len(recent_dispatches)
+        kind = opportunity.kind
+
+        intent = "reconnect"
+        message_shape = "brief_check_in"
+        preferred_move = "reference the shared thread naturally"
+        should_ask_question = True
+        should_offer_action = False
+        tone = "warm, specific, lightly human"
+
+        if kind == HeartbeatOpportunityKind.CONVERSATION_DROPOFF:
+            intent = "resume unfinished thread"
+            message_shape = "soft_nudge"
+            preferred_move = "anchor to the exact unfinished moment and invite the user back in without pressure"
+            should_ask_question = True
+            should_offer_action = True
+            tone = "casual, warm, a little curious"
+        elif kind == HeartbeatOpportunityKind.PROMISE_FOLLOWUP:
+            intent = "follow up on an unresolved promise or task"
+            message_shape = "gentle_followup"
+            preferred_move = "check whether it got done or whether the agent should take over"
+            should_ask_question = True
+            should_offer_action = True
+            tone = "supportive, low-pressure, practically helpful"
+        elif kind == HeartbeatOpportunityKind.BACKGROUND_TASK_COMPLETION:
+            intent = "report a meaningful background completion"
+            message_shape = "completion_report"
+            preferred_move = "lead with the concrete completion, then offer short or full details"
+            should_ask_question = True
+            should_offer_action = False
+            tone = "confident, useful, lightly excited"
+            if background_job is not None:
+                preferred_move = (
+                    f"lead with the concrete completion of '{background_job.title}', then offer the user a short or full breakdown"
+                )
+
+        if recent_dispatch_count >= 2:
+            tone = tone + ", with extra restraint"
+
+        kind_key = str(getattr(kind, "value", kind))
+        kind_profile = {}
+        if isinstance(response_profile, dict):
+            kind_profiles = response_profile.get("kind_profiles")
+            if isinstance(kind_profiles, dict):
+                candidate = kind_profiles.get(kind_key)
+                if isinstance(candidate, dict):
+                    kind_profile = candidate
+
+        if int(kind_profile.get("sample_count") or 0) >= 2:
+            if float(kind_profile.get("no_reply_rate") or 0.0) >= 0.5:
+                tone = tone + ", especially low-pressure"
+            elif float(kind_profile.get("quick_reply_rate") or 0.0) >= 0.5:
+                tone = tone + ", with confident timing"
+            if float(kind_profile.get("acknowledgment_only_rate") or 0.0) >= 0.5:
+                preferred_move = preferred_move + "; make it easier for the user to genuinely re-enter the thread, not just acknowledge it"
+            if float(kind_profile.get("momentum_reopen_rate") or 0.0) >= 0.5:
+                preferred_move = preferred_move + "; lean into a message shape that naturally opens a fuller back-and-forth"
+
+        thread_profile = dict(thread_emotion_profile or {})
+        unresolved_score = float(thread_profile.get("unresolved_score") or 0.0)
+        tone_label = str(thread_profile.get("tone_label") or "").strip().lower()
+        if unresolved_score >= 0.5:
+            tone = tone + ", emotionally careful"
+            preferred_move = preferred_move + "; acknowledge the emotional shape of the thread without sounding clinical"
+        if tone_label == "tense":
+            tone = tone + ", grounding rather than pushy"
+        elif tone_label == "playful":
+            tone = tone + ", with a little spark"
+        elif tone_label == "settled":
+            preferred_move = preferred_move + "; respect that the thread may already feel complete"
+
+        return {
+            "intent": intent,
+            "message_shape": message_shape,
+            "preferred_move": preferred_move,
+            "tone": tone,
+            "should_ask_question": should_ask_question,
+            "should_offer_action": should_offer_action,
+            "desired_pressure": opportunity.desired_pressure,
+            "warmth_target": opportunity.warmth_target,
+            "annoyance_risk": opportunity.annoyance_risk,
+            "recent_dispatch_count": recent_dispatch_count,
+            "reason_summary": _heartbeat_text_snippet(opportunity.reason_summary, limit=220),
+            "last_user_message": last_user_message,
+            "last_assistant_message": last_assistant_message,
+            "open_commitment_count": len(commitments),
+            "conversation_energy": float(presence.conversation_energy) if presence is not None else None,
+            "tension_score": float(presence.tension_score) if presence is not None else None,
+            "warmth_score": float(presence.warmth_score) if presence is not None else None,
+            "kind_response_profile": kind_profile,
+            "thread_emotion_profile": thread_profile,
+            "response_quality_goal": (
+                "optimize for a real reopening of the conversation, not just a quick acknowledgment"
+            ),
+            "linked_background_job": (
+                {
+                    "job_key": background_job.job_key,
+                    "title": background_job.title,
+                    "kind": background_job.kind.value,
+                    "status": background_job.status.value,
+                    "completion_summary": _heartbeat_text_snippet(background_job.completion_summary, limit=220)
+                    if background_job.completion_summary
+                    else None,
+                }
+                if background_job is not None
+                else None
+            ),
+            "taboo_phrases": [
+                "just checking in",
+                "hope you're doing well",
+                "as an AI",
+                "friendly reminder",
+            ],
+        }
+
+    async def build_heartbeat_context(
+        self,
+        *,
+        opportunity_key: str,
+        agent_namespace: str | None = None,
+    ) -> dict[str, Any] | None:
+        opportunities = await self.transport.list_heartbeat_opportunities(
+            limit=50,
+            agent_namespace=agent_namespace,
+        )
+        target = next((item for item in opportunities if item.opportunity_key == opportunity_key), None)
+        if target is None:
+            return None
+
+        presence = await self.transport.get_presence_state(agent_namespace=agent_namespace)
+        session_payload: dict[str, Any] | None = None
+        if target.session_id is not None:
+            session = await self.transport.get_session(str(target.session_id))
+            if session is not None:
+                session_updated_at = getattr(session, "updated_at", None)
+                session_payload = {
+                    "session_id": str(session.id),
+                    "legacy_session_id": session.legacy_session_id,
+                    "platform": str(getattr(session.platform, "value", session.platform)),
+                    "title": session.title,
+                    "summary": session.summary,
+                    "started_at": session.started_at.isoformat(),
+                    "updated_at": session_updated_at.isoformat() if session_updated_at else None,
+                    "model_config": dict(session.session_model_config or {}),
+                }
+
+        active_state_records = await self.transport.list_active_state(
+            limit=5,
+            agent_namespace=agent_namespace,
+            statuses=["active", "cooling"],
+        )
+        commitments = await self.transport.list_commitments(
+            limit=5,
+            agent_namespace=agent_namespace,
+            statuses=["open"],
+        )
+        directives = await self.transport.list_directives(
+            limit=5,
+            agent_namespace=agent_namespace,
+            statuses=["active"],
+        )
+        corrections = await self.transport.list_corrections(
+            limit=5,
+            agent_namespace=agent_namespace,
+            active_only=True,
+        )
+        handoffs = await self.transport.list_session_handoffs(
+            limit=5,
+            agent_namespace=agent_namespace,
+        )
+        timeline_events = await self.transport.list_timeline_events(
+            limit=5,
+            agent_namespace=agent_namespace,
+        )
+        background_jobs = await self.transport.list_background_jobs(
+            limit=5,
+            agent_namespace=agent_namespace,
+            statuses=[
+                BackgroundJobStatus.QUEUED.value,
+                BackgroundJobStatus.RUNNING.value,
+                BackgroundJobStatus.COMPLETED.value,
+            ],
+            session_id=str(target.session_id) if target.session_id is not None else None,
+        )
+        recent_dispatches = await self.transport.list_heartbeat_dispatches(
+            limit=3,
+            agent_namespace=agent_namespace,
+            opportunity_key=target.opportunity_key if target.session_id is None else None,
+            session_id=str(target.session_id) if target.session_id is not None else None,
+        )
+        recent_global_dispatches = await self.transport.list_heartbeat_dispatches(
+            limit=24,
+            agent_namespace=agent_namespace,
+        )
+        recent_episodes: list[Episode] = []
+        if target.session_id is not None:
+            recent_episodes = await self.transport.list_episodes_for_session(
+                str(target.session_id),
+                limit=8,
+            )
+        matching_handoff = None
+        if target.session_id is not None:
+            matching_handoff = next(
+                (item for item in handoffs if str(item.session_id) == str(target.session_id)),
+                None,
+            )
+        recent_global_episodes = await self.transport.list_recent_episodes(
+            limit=120,
+            platform=str(getattr(presence.active_platform, "value", presence.active_platform))
+            if presence is not None and presence.active_platform is not None
+            else None,
+            agent_namespace=agent_namespace,
+        )
+        response_profile = build_response_profile(
+            recent_global_dispatches,
+            recent_global_episodes,
+        )
+        thread_emotion_profile = build_thread_emotion_profile(
+            recent_episodes,
+            handoff_tone=matching_handoff.emotional_tone if matching_handoff is not None else None,
+            presence=presence,
+        )
+        recent_messages = self._build_heartbeat_recent_messages(recent_episodes)
+        communication_constraints = self._build_heartbeat_constraints(
+            directives=directives,
+            corrections=corrections,
+        )
+        linked_background_job = None
+        linked_background_job_key = _extract_background_job_ref(target.source_refs)
+        if linked_background_job_key:
+            linked_jobs = await self.transport.list_background_jobs(
+                limit=1,
+                agent_namespace=agent_namespace,
+                job_key=linked_background_job_key,
+            )
+            if linked_jobs:
+                linked_background_job = linked_jobs[0]
+        authoring_brief = self._build_heartbeat_authoring_brief(
+            opportunity=target,
+            presence=presence,
+            commitments=commitments,
+            recent_messages=recent_messages,
+            recent_dispatches=recent_dispatches,
+            response_profile=response_profile,
+            thread_emotion_profile=thread_emotion_profile,
+            background_job=linked_background_job,
+        )
+
+        return {
+            "opportunity": target.model_dump(mode="json"),
+            "presence_state": presence.model_dump(mode="json") if presence is not None else None,
+            "session": session_payload,
+            "active_state": [item.model_dump(mode="json") for item in active_state_records],
+            "commitments": [item.model_dump(mode="json") for item in commitments],
+            "directives": [item.model_dump(mode="json") for item in directives],
+            "corrections": [item.model_dump(mode="json") for item in corrections],
+            "session_handoffs": [item.model_dump(mode="json") for item in handoffs],
+            "timeline_events": [item.model_dump(mode="json") for item in timeline_events],
+            "background_jobs": [item.model_dump(mode="json") for item in background_jobs],
+            "background_job": linked_background_job.model_dump(mode="json") if linked_background_job is not None else None,
+            "recent_messages": recent_messages,
+            "recent_dispatches": [item.model_dump(mode="json") for item in recent_dispatches],
+            "response_profile": response_profile,
+            "thread_emotion_profile": thread_emotion_profile,
+            "communication_constraints": communication_constraints,
+            "authoring_brief": authoring_brief,
+        }
+
+    async def ensure_conversation_dropoff_opportunity(
+        self,
+        *,
+        agent_namespace: str | None = None,
+        now: datetime | None = None,
+        min_delay: timedelta = timedelta(minutes=2),
+        max_delay: timedelta = timedelta(minutes=15),
+    ) -> HeartbeatOpportunity | None:
+        refreshed_presence = await self.refresh_presence(
+            agent_namespace=agent_namespace,
+            now=now,
+            dropoff_after=min_delay,
+        )
+        candidate = build_conversation_dropoff_opportunity(
+            refreshed_presence,
+            now=now or _utcnow(),
+            min_delay=min_delay,
+            max_delay=max_delay,
+        )
+        if candidate is None:
+            return None
+
+        existing = await self.transport.list_heartbeat_opportunities(
+            limit=5,
+            agent_namespace=agent_namespace,
+            statuses=[HeartbeatOpportunityStatus.PENDING.value],
+            kinds=[HeartbeatOpportunityKind.CONVERSATION_DROPOFF.value],
+            session_id=str(candidate.session_id),
+        )
+        for record in existing:
+            if record.opportunity_key == candidate.opportunity_key:
+                return record
+        return await self.transport.upsert_heartbeat_opportunity(candidate)
+
+    async def ensure_promise_followup_opportunities(
+        self,
+        *,
+        agent_namespace: str | None = None,
+        now: datetime | None = None,
+        limit: int = 16,
+        min_age: timedelta = timedelta(hours=18),
+        min_delay_after_observation: timedelta = timedelta(hours=6),
+    ) -> list[HeartbeatOpportunity]:
+        open_commitments = await self.transport.list_commitments(
+            limit=limit,
+            agent_namespace=agent_namespace,
+            statuses=[CommitmentStatus.OPEN.value],
+        )
+        existing = await self.transport.list_heartbeat_opportunities(
+            limit=max(limit * 2, 20),
+            agent_namespace=agent_namespace,
+            statuses=[HeartbeatOpportunityStatus.PENDING.value],
+            kinds=[HeartbeatOpportunityKind.PROMISE_FOLLOWUP.value],
+        )
+        existing_by_key = {item.opportunity_key: item for item in existing}
+        open_keys: set[str] = set()
+        stored: list[HeartbeatOpportunity] = []
+
+        for commitment in open_commitments:
+            candidate = build_promise_followup_opportunity(
+                commitment,
+                now=now or _utcnow(),
+                min_age=min_age,
+                min_delay_after_observation=min_delay_after_observation,
+            )
+            if candidate is None:
+                continue
+            open_keys.add(candidate.opportunity_key)
+            existing_record = existing_by_key.get(candidate.opportunity_key)
+            if existing_record is not None:
+                stored.append(existing_record)
+                continue
+            stored.append(await self.transport.upsert_heartbeat_opportunity(candidate))
+
+        for record in existing:
+            if record.opportunity_key not in open_keys:
+                await self.transport.cancel_heartbeat_opportunity(
+                    record.opportunity_key,
+                    agent_namespace=agent_namespace,
+                )
+        return stored
+
+    async def create_background_task_completion_opportunity(
+        self,
+        *,
+        session_id: str | None,
+        reason_summary: str,
+        agent_namespace: str | None = None,
+        now: datetime | None = None,
+        priority_score: float = 0.8,
+        source_refs: list[str] | None = None,
+    ) -> HeartbeatOpportunity:
+        candidate = build_background_task_completion_opportunity(
+            agent_namespace=agent_namespace,
+            session_id=session_id,
+            reason_summary=reason_summary,
+            now=now or _utcnow(),
+            priority_score=priority_score,
+            source_refs=source_refs,
+        )
+        return await self.transport.upsert_heartbeat_opportunity(candidate)
 
     async def curate_live_continuity(
         self,

@@ -10,7 +10,29 @@ import pytest
 from memory.client import MemoryClient
 from memory.embedding import MockEmbeddingProvider, OpenAIEmbeddingProvider, truncate_embedding
 from memory.emotions import EmotionAnalyzer
-from memory.models import ActiveState, Commitment, Correction, DecisionOutcome, Directive, Episode, EpisodeRole, Fact, FactHistory, Pattern, Session, SessionHandoff, TimelineEvent
+from memory.models import (
+    ActiveState,
+    BackgroundJob,
+    BackgroundJobKind,
+    BackgroundJobStatus,
+    Commitment,
+    Correction,
+    DecisionOutcome,
+    Directive,
+    Episode,
+    EpisodeRole,
+    Fact,
+    FactHistory,
+    HeartbeatDispatch,
+    HeartbeatDispatchStatus,
+    HeartbeatOpportunity,
+    HeartbeatOpportunityStatus,
+    Pattern,
+    PresenceState,
+    Session,
+    SessionHandoff,
+    TimelineEvent,
+)
 from memory.models import Reflection
 
 
@@ -30,6 +52,10 @@ class InMemoryTransport:
         self.commitments: list[Commitment] = []
         self.corrections: list[Correction] = []
         self.session_handoffs: list[SessionHandoff] = []
+        self.presence_state: PresenceState | None = None
+        self.background_jobs: list[BackgroundJob] = []
+        self.heartbeat_opportunities: list[HeartbeatOpportunity] = []
+        self.heartbeat_dispatches: list[HeartbeatDispatch] = []
 
     async def insert_session(self, session: Session) -> Session:
         if session.id is None:
@@ -267,6 +293,176 @@ class InMemoryTransport:
     async def health_check(self) -> bool:
         return True
 
+    async def upsert_presence_state(self, state: PresenceState) -> PresenceState:
+        self.presence_state = state
+        return state
+
+    async def get_presence_state(self, agent_namespace: str | None = None) -> PresenceState | None:
+        _ = agent_namespace
+        return self.presence_state
+
+    async def upsert_background_job(self, job: BackgroundJob) -> BackgroundJob:
+        if job.id is None:
+            job = job.model_copy(update={"id": uuid4()})
+        self.background_jobs = [existing for existing in self.background_jobs if existing.job_key != job.job_key]
+        self.background_jobs.append(job)
+        self.background_jobs.sort(key=lambda item: item.updated_at or item.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return job
+
+    async def list_background_jobs(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        session_id: str | None = None,
+        job_key: str | None = None,
+    ) -> list[BackgroundJob]:
+        _ = agent_namespace
+        items = list(self.background_jobs)
+        if statuses:
+            allowed = {str(item) for item in statuses}
+            items = [item for item in items if item.status.value in allowed]
+        if session_id is not None:
+            items = [item for item in items if str(item.session_id or "") == str(session_id)]
+        if job_key is not None:
+            items = [item for item in items if item.job_key == job_key]
+        items.sort(key=lambda item: item.updated_at or item.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return items[:limit]
+
+    async def transition_background_job(
+        self,
+        job_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+        progress_note: str | None = None,
+        completion_summary: str | None = None,
+        result_refs: list[str] | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> BackgroundJob | None:
+        _ = agent_namespace
+        changed = None
+        items: list[BackgroundJob] = []
+        for item in self.background_jobs:
+            if item.job_key == job_key:
+                patch: dict[str, object] = {
+                    "status": BackgroundJobStatus(status),
+                    "updated_at": updated_at or datetime.now(timezone.utc),
+                }
+                if progress_note is not None:
+                    patch["progress_note"] = progress_note
+                    patch["last_progress_at"] = updated_at or datetime.now(timezone.utc)
+                if completion_summary is not None:
+                    patch["completion_summary"] = completion_summary
+                if result_refs is not None:
+                    patch["result_refs"] = list(result_refs)
+                if started_at is not None:
+                    patch["started_at"] = started_at
+                if completed_at is not None:
+                    patch["completed_at"] = completed_at
+                item = item.model_copy(update=patch)
+                changed = item
+            items.append(item)
+        self.background_jobs = items
+        return changed
+
+    async def upsert_heartbeat_opportunity(self, opportunity: HeartbeatOpportunity) -> HeartbeatOpportunity:
+        self.heartbeat_opportunities = [
+            existing
+            for existing in self.heartbeat_opportunities
+            if existing.opportunity_key != opportunity.opportunity_key
+        ]
+        self.heartbeat_opportunities.append(opportunity)
+        return opportunity
+
+    async def list_heartbeat_opportunities(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        kinds: list[str] | None = None,
+        session_id: str | None = None,
+    ) -> list[HeartbeatOpportunity]:
+        _ = agent_namespace
+        items = list(self.heartbeat_opportunities)
+        if statuses:
+            allowed = {str(item) for item in statuses}
+            items = [item for item in items if item.status.value in allowed]
+        if kinds:
+            allowed_kinds = {str(item) for item in kinds}
+            items = [item for item in items if item.kind.value in allowed_kinds]
+        if session_id is not None:
+            items = [item for item in items if str(item.session_id or "") == str(session_id)]
+        items.sort(key=lambda item: (item.priority_score, item.earliest_send_at), reverse=True)
+        return items[:limit]
+
+    async def insert_heartbeat_dispatch(self, dispatch: HeartbeatDispatch) -> HeartbeatDispatch:
+        if dispatch.id is None:
+            dispatch = dispatch.model_copy(update={"id": uuid4()})
+        self.heartbeat_dispatches.append(dispatch)
+        self.heartbeat_dispatches.sort(key=lambda item: item.attempted_at, reverse=True)
+        return dispatch
+
+    async def list_heartbeat_dispatches(
+        self,
+        limit: int = 10,
+        agent_namespace: str | None = None,
+        statuses: list[str] | None = None,
+        opportunity_key: str | None = None,
+        session_id: str | None = None,
+        since: datetime | None = None,
+    ) -> list[HeartbeatDispatch]:
+        _ = agent_namespace
+        items = list(self.heartbeat_dispatches)
+        if statuses:
+            allowed = {str(item) for item in statuses}
+            items = [item for item in items if item.dispatch_status.value in allowed]
+        if opportunity_key is not None:
+            items = [item for item in items if item.opportunity_key == opportunity_key]
+        if session_id is not None:
+            items = [item for item in items if str(item.session_id or "") == str(session_id)]
+        if since is not None:
+            items = [item for item in items if item.attempted_at >= since]
+        items.sort(key=lambda item: item.attempted_at, reverse=True)
+        return items[:limit]
+
+    async def cancel_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        _ = agent_namespace
+        cancelled = False
+        updated: list[HeartbeatOpportunity] = []
+        for item in self.heartbeat_opportunities:
+            if item.opportunity_key == opportunity_key:
+                item = item.model_copy(update={"status": HeartbeatOpportunityStatus.CANCELLED})
+                cancelled = True
+            updated.append(item)
+        self.heartbeat_opportunities = updated
+        return cancelled
+
+    async def transition_heartbeat_opportunity(
+        self,
+        opportunity_key: str,
+        *,
+        status: str,
+        agent_namespace: str | None = None,
+    ) -> bool:
+        _ = agent_namespace
+        changed = False
+        updated: list[HeartbeatOpportunity] = []
+        for item in self.heartbeat_opportunities:
+            if item.opportunity_key == opportunity_key:
+                item = item.model_copy(update={"status": HeartbeatOpportunityStatus(status)})
+                changed = True
+            updated.append(item)
+        self.heartbeat_opportunities = updated
+        return changed
+
 
 class SlowSessionTransport(InMemoryTransport):
     async def get_session(self, session_id: str) -> Session | None:
@@ -413,6 +609,361 @@ async def test_refresh_session_handoff_persists_latest_baton() -> None:
     assert "warm bridge worker" in handoff.assistant_context
     assert handoff.emotional_tone == "frustration, relief"
     assert transport.session_handoffs[0].handoff_key == f"auto:handoff:{updated_session.id}"
+
+
+@pytest.mark.asyncio
+async def test_record_presence_event_tracks_user_and_assistant_activity() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    user_state = await client.record_presence_event(
+        role="user",
+        session_id=str(session.id),
+        platform="telegram",
+        occurred_at=now,
+        agent_namespace="main",
+        thread_summary="Midway through a debugging thread.",
+    )
+    assistant_state = await client.record_presence_event(
+        role="assistant",
+        session_id=str(session.id),
+        platform="telegram",
+        occurred_at=now + timedelta(seconds=30),
+        agent_namespace="main",
+    )
+
+    assert user_state.last_user_message_at == now
+    assert assistant_state.last_agent_message_at == now + timedelta(seconds=30)
+    assert assistant_state.current_thread_summary == "Midway through a debugging thread."
+    assert assistant_state.active_platform.value == "telegram"
+
+
+@pytest.mark.asyncio
+async def test_ensure_conversation_dropoff_opportunity_creates_pending_record() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    await client.record_presence_event(
+        role="assistant",
+        session_id=str(session.id),
+        platform="telegram",
+        occurred_at=now - timedelta(minutes=6),
+        agent_namespace="main",
+        thread_summary="The user disappeared mid-debug after I asked a concrete question.",
+    )
+
+    opportunity = await client.ensure_conversation_dropoff_opportunity(
+        agent_namespace="main",
+        now=now,
+        min_delay=timedelta(minutes=2),
+        max_delay=timedelta(minutes=20),
+    )
+
+    assert opportunity is not None
+    assert opportunity.kind.value == "conversation_dropoff"
+    assert opportunity.opportunity_key == f"dropoff:{session.id}"
+    assert transport.presence_state is not None
+    assert transport.presence_state.user_disappeared_mid_thread is True
+
+
+@pytest.mark.asyncio
+async def test_user_return_cancels_dropoff_opportunity() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    await client.record_presence_event(
+        role="assistant",
+        session_id=str(session.id),
+        platform="telegram",
+        occurred_at=now - timedelta(minutes=5),
+        agent_namespace="main",
+    )
+    await client.ensure_conversation_dropoff_opportunity(
+        agent_namespace="main",
+        now=now,
+        min_delay=timedelta(minutes=2),
+    )
+
+    cancelled_state = await client.record_presence_event(
+        role="user",
+        session_id=str(session.id),
+        platform="telegram",
+        occurred_at=now + timedelta(seconds=5),
+        agent_namespace="main",
+    )
+
+    assert cancelled_state.user_disappeared_mid_thread is False
+    assert any(item.status.value == "cancelled" for item in transport.heartbeat_opportunities)
+
+
+@pytest.mark.asyncio
+async def test_ensure_promise_followup_opportunities_derives_from_open_commitments() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    now = datetime.now(timezone.utc)
+
+    await client.add_commitment(
+        kind="follow_up",
+        statement="Check whether the Telegram migration cleanup was actually finished.",
+        commitment_key="migration-cleanup-followup",
+        first_committed_at=now - timedelta(days=2),
+        last_observed_at=now - timedelta(days=1),
+        priority_score=0.81,
+        confidence=0.9,
+        agent_namespace="main",
+    )
+
+    opportunities = await client.ensure_promise_followup_opportunities(
+        agent_namespace="main",
+        now=now,
+    )
+
+    assert len(opportunities) == 1
+    assert opportunities[0].kind.value == "promise_followup"
+    assert opportunities[0].opportunity_key == "followup:migration-cleanup-followup"
+
+
+@pytest.mark.asyncio
+async def test_create_background_task_completion_opportunity_persists_record() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    created = await client.create_background_task_completion_opportunity(
+        session_id=str(session.id),
+        reason_summary="Finished tracing the reply latency issue and isolated the actual bottleneck.",
+        agent_namespace="main",
+        now=now,
+        source_refs=["job:bg-42"],
+    )
+
+    assert created.kind.value == "background_task_completion"
+    assert created.session_id == session.id
+    assert any(item.opportunity_key == created.opportunity_key for item in transport.heartbeat_opportunities)
+
+
+@pytest.mark.asyncio
+async def test_complete_background_job_persists_job_and_creates_completion_opportunity() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    job = await client.create_background_job(
+        title="Trace heartbeat dispatch path",
+        session_id=str(session.id),
+        agent_namespace="main",
+        kind=BackgroundJobKind.TRACE.value,
+        source_refs=["issue:dispatch"],
+        now=now - timedelta(minutes=8),
+    )
+
+    completed = await client.complete_background_job(
+        job.job_key,
+        agent_namespace="main",
+        completion_summary="Finished tracing the dispatch path and found the target-resolution bug.",
+        result_refs=["file:gateway/heartbeat/dispatch.py"],
+        now=now,
+    )
+
+    stored_job = completed["job"]
+    opportunity = completed["opportunity"]
+    assert stored_job is not None
+    assert stored_job.status == BackgroundJobStatus.COMPLETED
+    assert stored_job.completion_summary == "Finished tracing the dispatch path and found the target-resolution bug."
+    assert opportunity is not None
+    assert opportunity.kind.value == "background_task_completion"
+    assert f"job:{job.job_key}" in opportunity.source_refs
+
+
+@pytest.mark.asyncio
+async def test_build_heartbeat_context_returns_memory_packet() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    await client.store_message(
+        str(session.id),
+        "user",
+        "if i disappear, keep pushing on the gateway bug and tell me what you find",
+        platform="telegram",
+        agent_namespace="main",
+    )
+    await client.store_message(
+        str(session.id),
+        "assistant",
+        "i think the real bug is in the dispatch handoff path, want me to trace it end to end?",
+        platform="telegram",
+        agent_namespace="main",
+    )
+    await client.add_directive(
+        kind="communication",
+        content="Be direct and concrete when following up.",
+        directive_key="heartbeat:direct",
+        status="active",
+        confidence=0.9,
+        priority_score=0.82,
+        last_observed_at=now,
+        agent_namespace="main",
+    )
+    await client.add_correction(
+        kind="interpretation_rejection",
+        statement="Do not use vague wellness-style check-ins.",
+        correction_key="heartbeat:no-wellness-bot",
+        first_observed_at=now - timedelta(days=1),
+        last_observed_at=now,
+        active=True,
+        confidence=0.94,
+        agent_namespace="main",
+    )
+
+    await client.record_presence_event(
+        role="assistant",
+        session_id=str(session.id),
+        platform="telegram",
+        occurred_at=now - timedelta(minutes=5),
+        agent_namespace="main",
+        thread_summary="The user vanished after I asked whether I should keep debugging.",
+    )
+    opportunity = await client.ensure_conversation_dropoff_opportunity(
+        agent_namespace="main",
+        now=now,
+        min_delay=timedelta(minutes=2),
+    )
+    await client.record_heartbeat_dispatch(
+        opportunity_key=opportunity.opportunity_key if opportunity else "",
+        dispatch_status="suppressed",
+        agent_namespace="main",
+        opportunity_kind="conversation_dropoff",
+        session_id=str(session.id),
+        target="telegram:123",
+        attempted_at=now - timedelta(minutes=1),
+    )
+
+    packet = await client.build_heartbeat_context(
+        opportunity_key=opportunity.opportunity_key if opportunity else "",
+        agent_namespace="main",
+    )
+
+    assert packet is not None
+    assert packet["opportunity"]["opportunity_key"] == opportunity.opportunity_key
+    assert packet["presence_state"]["active_session_id"] == str(session.id)
+    assert packet["session"]["session_id"] == str(session.id)
+    assert packet["recent_dispatches"][0]["dispatch_status"] == "suppressed"
+    assert "response_profile" in packet
+    assert "thread_emotion_profile" in packet
+    assert packet["recent_messages"][-1]["role"] == "assistant"
+    assert packet["communication_constraints"]["non_negotiables"]
+    assert packet["authoring_brief"]["intent"] == "resume unfinished thread"
+    assert "thread_emotion_profile" in packet["authoring_brief"]
+
+
+@pytest.mark.asyncio
+async def test_build_heartbeat_context_includes_linked_background_job() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    job = await client.create_background_job(
+        title="Trace gateway heartbeat route",
+        session_id=str(session.id),
+        agent_namespace="main",
+        kind=BackgroundJobKind.TRACE.value,
+        description="Follow the route resolution path end to end.",
+        now=now - timedelta(minutes=12),
+    )
+    await client.transition_background_job(
+        job.job_key,
+        status=BackgroundJobStatus.RUNNING.value,
+        agent_namespace="main",
+        progress_note="Found the route lookup seam.",
+        started_at=now - timedelta(minutes=10),
+        updated_at=now - timedelta(minutes=10),
+    )
+    completed = await client.complete_background_job(
+        job.job_key,
+        agent_namespace="main",
+        completion_summary="Finished the route trace and isolated the missing target issue.",
+        result_refs=["file:gateway/heartbeat/dispatch.py"],
+        now=now,
+    )
+
+    opportunity = completed["opportunity"]
+    packet = await client.build_heartbeat_context(
+        opportunity_key=opportunity.opportunity_key if opportunity else "",
+        agent_namespace="main",
+    )
+
+    assert packet is not None
+    assert packet["background_job"]["job_key"] == job.job_key
+    assert packet["background_job"]["status"] == "completed"
+    assert packet["background_jobs"][0]["job_key"] == job.job_key
+    assert packet["authoring_brief"]["linked_background_job"]["job_key"] == job.job_key
+
+
+@pytest.mark.asyncio
+async def test_record_heartbeat_dispatch_persists_dispatch_history() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    dispatch = await client.record_heartbeat_dispatch(
+        opportunity_key=f"dropoff:{session.id}",
+        dispatch_status="sent",
+        agent_namespace="main",
+        opportunity_kind="conversation_dropoff",
+        session_id=str(session.id),
+        target="telegram:12345",
+        send_score=0.83,
+        response_preview="hey, where'd you vanish to?",
+        attempted_at=now,
+    )
+
+    history = await client.list_heartbeat_dispatches(
+        agent_namespace="main",
+        session_id=str(session.id),
+    )
+
+    assert dispatch.dispatch_status == HeartbeatDispatchStatus.SENT
+    assert history[0].target == "telegram:12345"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_dispatch_cooldown_blocks_recent_same_session_send() -> None:
+    transport = InMemoryTransport()
+    client = MemoryClient(transport=transport, embedding=MockEmbeddingProvider(), emotions=EmotionAnalyzer())
+    session = await client.start_session(platform="telegram", agent_namespace="main")
+    now = datetime.now(timezone.utc)
+
+    await client.record_heartbeat_dispatch(
+        opportunity_key=f"dropoff:{session.id}",
+        dispatch_status="sent",
+        agent_namespace="main",
+        opportunity_kind="conversation_dropoff",
+        session_id=str(session.id),
+        target="telegram:12345",
+        attempted_at=now - timedelta(minutes=4),
+    )
+
+    cooldown = await client.heartbeat_dispatch_cooldown(
+        opportunity_key=f"followup:{session.id}",
+        agent_namespace="main",
+        session_id=str(session.id),
+        now=now,
+    )
+
+    assert cooldown["blocked"] is True
+    assert cooldown["reason"] == "same-session-recent"
 
 
 @pytest.mark.asyncio
