@@ -364,6 +364,13 @@ def build_thread_emotion_profile(
     }
 
 
+def build_conversation_dropoff_key(session_id: object, last_agent_message_at: datetime) -> str:
+    normalized_session_id = str(session_id or "").strip()
+    occurred_at = last_agent_message_at.astimezone(timezone.utc)
+    occurred_token = occurred_at.strftime("%Y%m%dT%H%M%SZ")
+    return f"dropoff:{normalized_session_id}:{occurred_token}"
+
+
 def build_conversation_dropoff_opportunity(
     state: PresenceState | None,
     *,
@@ -394,7 +401,7 @@ def build_conversation_dropoff_opportunity(
 
     return HeartbeatOpportunity(
         agent_namespace=state.agent_namespace,
-        opportunity_key=f"dropoff:{state.active_session_id}",
+        opportunity_key=build_conversation_dropoff_key(state.active_session_id, state.last_agent_message_at),
         kind=HeartbeatOpportunityKind.CONVERSATION_DROPOFF,
         status=HeartbeatOpportunityStatus.PENDING,
         session_id=state.active_session_id,

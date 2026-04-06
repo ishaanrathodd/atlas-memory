@@ -8,6 +8,7 @@ from memory.heartbeat import (
     build_rhythm_profile,
     build_thread_emotion_profile,
     build_background_task_completion_opportunity,
+    build_conversation_dropoff_key,
     build_conversation_dropoff_opportunity,
     build_promise_followup_opportunity,
     is_opportunity_due,
@@ -40,7 +41,7 @@ def test_build_conversation_dropoff_opportunity_uses_presence_state() -> None:
     )
 
     assert opportunity is not None
-    assert opportunity.opportunity_key == f"dropoff:{session_id}"
+    assert opportunity.opportunity_key == build_conversation_dropoff_key(session_id, state.last_agent_message_at)
     assert opportunity.reason_summary == state.current_thread_summary
     assert opportunity.requires_authored_llm_message is True
 
@@ -84,6 +85,46 @@ def test_score_opportunity_penalizes_annoyance_risk() -> None:
     high_score = score_opportunity(opportunity, state=state, now=now)
 
     assert high_score > low_score
+
+
+def test_selection_score_does_not_reuse_failed_dropoff_penalty_across_distinct_moments() -> None:
+    now = datetime(2026, 4, 6, 15, 30, tzinfo=timezone.utc)
+    session_id = uuid4()
+    last_agent_message_at = now - timedelta(minutes=8)
+    state = PresenceState(
+        agent_namespace="main",
+        active_session_id=session_id,
+        last_agent_message_at=last_agent_message_at,
+        conversation_energy=0.42,
+        warmth_score=0.6,
+        tension_score=0.0,
+        user_disappeared_mid_thread=True,
+    )
+    opportunity = build_conversation_dropoff_opportunity(state, now=now)
+    assert opportunity is not None
+
+    older_dispatch = HeartbeatDispatch(
+        agent_namespace="main",
+        opportunity_key=build_conversation_dropoff_key(session_id, now - timedelta(hours=1, minutes=32)),
+        opportunity_kind="conversation_dropoff",
+        session_id=session_id,
+        dispatch_status="failed",
+        attempted_at=now - timedelta(hours=1, minutes=31),
+        created_at=now - timedelta(hours=1, minutes=31),
+        updated_at=now - timedelta(hours=1, minutes=31),
+    )
+
+    score = selection_score_opportunity(
+        opportunity,
+        state=state,
+        recent_dispatches=[older_dispatch],
+        rhythm_profile={"sample_count": 6, "is_likely_active_hour": True, "is_quiet_hour": False},
+        response_profile={"sample_count": 0, "kind_profiles": {}},
+        thread_emotion_profile={"closure_score": 0.22, "unresolved_score": 0.0, "tone_label": "neutral"},
+        now=now,
+    )
+
+    assert score > 0.55
 
 
 def test_build_promise_followup_opportunity_from_open_commitment() -> None:

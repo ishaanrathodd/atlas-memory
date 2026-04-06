@@ -33,6 +33,7 @@ from memory.models import (
     SessionHandoff,
     TimelineEvent,
 )
+from memory.heartbeat import build_conversation_dropoff_key
 from memory.models import Reflection
 
 
@@ -665,7 +666,7 @@ async def test_ensure_conversation_dropoff_opportunity_creates_pending_record() 
 
     assert opportunity is not None
     assert opportunity.kind.value == "conversation_dropoff"
-    assert opportunity.opportunity_key == f"dropoff:{session.id}"
+    assert opportunity.opportunity_key == build_conversation_dropoff_key(session.id, now - timedelta(minutes=6))
     assert transport.presence_state is not None
     assert transport.presence_state.user_disappeared_mid_thread is True
 
@@ -796,7 +797,7 @@ async def test_ensure_conversation_dropoff_opportunity_does_not_recreate_suppres
     suppressed = HeartbeatOpportunity(
         id=uuid4(),
         agent_namespace="main",
-        opportunity_key=f"dropoff:{session.id}",
+        opportunity_key=build_conversation_dropoff_key(session.id, now - timedelta(minutes=6)),
         kind="conversation_dropoff",
         status="suppressed",
         session_id=session.id,

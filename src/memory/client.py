@@ -921,10 +921,18 @@ class MemoryClient:
         )
         stored = await self.transport.upsert_presence_state(updated)
         if str(role or "").strip().lower() == EpisodeRole.USER.value and session_id:
-            await self.transport.cancel_heartbeat_opportunity(
-                f"dropoff:{session_id}",
+            pending_dropoffs = await self.transport.list_heartbeat_opportunities(
+                limit=12,
                 agent_namespace=agent_namespace,
+                statuses=[HeartbeatOpportunityStatus.PENDING.value],
+                kinds=[HeartbeatOpportunityKind.CONVERSATION_DROPOFF.value],
+                session_id=str(session_id),
             )
+            for item in pending_dropoffs:
+                await self.transport.cancel_heartbeat_opportunity(
+                    item.opportunity_key,
+                    agent_namespace=agent_namespace,
+                )
         return stored
 
     async def refresh_presence(
