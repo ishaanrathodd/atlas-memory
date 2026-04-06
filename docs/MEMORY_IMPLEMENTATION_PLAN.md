@@ -4,6 +4,14 @@
 
 This document is the source of truth for how Atlas memory is built, what is already shipped, and what the final architecture should become.
 
+Atlas is now explicitly framed as a research program, not only an implementation project.
+
+See:
+
+- `RESEARCH_PROGRAM.md`
+- `ATLAS_IDENTITY_RESEARCH_REPORT.md`
+- `research/README.md`
+
 It answers:
 
 - what is done right now

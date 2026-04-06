@@ -4,6 +4,10 @@
 
 This document is the current source of truth for heartbeat across Atlas + Hermes.
 
+Related research:
+
+- `docs/ATLAS_IDENTITY_RESEARCH_REPORT.md`
+
 Heartbeat exists to make the agent feel:
 
 - alive between turns

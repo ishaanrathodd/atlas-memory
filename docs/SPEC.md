@@ -2,6 +2,13 @@
 
 This package provides the Atlas memory runtime, retrieval, consolidation, and evaluation utilities.
 
+Atlas is also an active research program into persistent identity substrates for artificial persons.
+
+Research framing:
+- `RESEARCH_PROGRAM.md`
+- `ATLAS_IDENTITY_RESEARCH_REPORT.md`
+- `research/README.md`
+
 Primary modules:
 - `memory.curator_runtime`
 - `memory.enrichment`

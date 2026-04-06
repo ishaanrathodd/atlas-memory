@@ -4,6 +4,10 @@
 
 This document tracks heartbeat as an implementation program, not just a design idea.
 
+Related research:
+
+- `docs/ATLAS_IDENTITY_RESEARCH_REPORT.md`
+
 It answers:
 
 - what is already shipped
