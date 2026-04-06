@@ -139,6 +139,7 @@ Shipped:
 Known limitation:
 
 - stale opportunity recovery after downtime is still weak
+- heartbeat does not yet preserve and intelligently reignite missed intent after long model/provider/gateway outages
 
 ## Phase 3: Send Decision Engine
 
@@ -239,10 +240,17 @@ Build:
 - refresh stale presence state
 - rescore still-viable opportunities after downtime
 - mark truly missed opportunities as expired instead of leaving ambiguity
+- preserve transiently failed heartbeat intent so it can be reconsidered when the system becomes healthy again
+- age missed opportunities into better post-outage re-entry moves instead of replaying stale nudges
+- add boot-time reconciliation for “the gateway/model/provider was down, but now I am back”
 
 Definition of done:
 
 - gateway restart does not silently sever heartbeat continuity
+- the agent can come back after a long unhealthy period and either:
+  - send a still-valid recovery message
+  - transform the old missed moment into a more appropriate reconnect
+  - suppress it cleanly if the moment is dead
 
 ## Priority 3: Real Off-Turn Agency
 
@@ -343,6 +351,29 @@ Optional long-term behavior modes:
 - more work-focused
 
 This should come only after the core system is robust.
+
+### Outage-Aware Re-entry Recovery
+
+This is a future feature that should only be built after basic heartbeat reliability is proven in real use.
+
+Target behavior:
+
+- if Hermes was paused, gateway was stopped, or no LLM/provider was available, heartbeat should not simply lose the underlying intent
+- once the system is healthy again, Atlas should re-open dormant intent and ask:
+  - is this still directly sendable?
+  - should this be transformed into a softer reconnect?
+  - is this now socially stale and better suppressed?
+
+Examples:
+
+- short outage:
+  - retry a still-valid follow-up once routing/model/provider health returns
+- long outage:
+  - transform a missed `conversation_dropoff` into a higher-level “resume/reconnect” message
+- very stale context:
+  - suppress instead of sending a broken late nudge
+
+This feature matters because it makes the agent feel aware of its own downtime instead of simply forgetting that it ever meant to reach out.
 
 ## Practical Next Step
 

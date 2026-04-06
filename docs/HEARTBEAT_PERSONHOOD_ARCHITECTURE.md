@@ -62,6 +62,18 @@ As of `2026-04-06`, heartbeat is no longer just a plan. A meaningful Phase 1-2.5
   - `promise_followup`
   - `background_task_completion`
 
+### Explicitly Not Shipped Yet
+
+Heartbeat does not yet have full downtime-aware recovery.
+
+That means:
+
+- a long gateway outage does not yet trigger a smart boot-time reconciliation pass
+- transient model/provider/send failures are not yet preserved and later re-evaluated as dormant intent
+- missed moments are not yet transformed into better long-gap re-entry messages automatically
+
+This is a deliberate future upgrade, not current behavior.
+
 ### Important Real Progress
 
 Heartbeat can now:
@@ -338,6 +350,15 @@ Add:
 - restart recovery scan
 - bounded retroactive recovery for still-useful opportunities
 - “missed moment” reconciliation logic
+- opportunity aging so a missed `conversation_dropoff` can become a softer `re-entry` / `resume` move instead of replaying an old nudge
+- transient-vs-terminal failure classification so the agent can retry when the system becomes healthy again
+- health-aware recovery after long pauses, missing models, provider outages, or gateway downtime
+
+Desired end state:
+
+- if the service comes back after a long pause, heartbeat should inspect dormant intent instead of forgetting it
+- if a message failed only because the system was unhealthy, heartbeat should know how to reconsider it later
+- if the original moment is no longer socially valid, heartbeat should either transform it into a better reconnect message or suppress it
 
 ### 3. Generalize Background Agency
 
