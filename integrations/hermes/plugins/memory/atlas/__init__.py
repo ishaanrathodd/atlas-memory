@@ -323,7 +323,7 @@ class AtlasMemoryProvider(MemoryProvider):
         self._model: str | None = None
         self._disabled = False
         self._session_synced = False
-        self._sync_queue: queue.Queue[tuple[str, str] | None] | None = None
+        self._sync_queue: queue.Queue[dict[str, Any] | None] | None = None
         self._sync_thread: threading.Thread | None = None
 
     @property
@@ -440,11 +440,25 @@ class AtlasMemoryProvider(MemoryProvider):
         if self._disabled or self._sync_queue is None:
             return
         effective_session_id = str(session_id or self._session_id).strip()
+        effective_memory_session_id = self._memory_session_id
         if effective_session_id and effective_session_id != self._session_id:
             self._session_id = effective_session_id
             self._memory_session_id = _normalize_memory_session_id(effective_session_id)
+            effective_memory_session_id = self._memory_session_id
             self._session_synced = False
-        self._sync_queue.put((user_content, assistant_content))
+        self._sync_queue.put(
+            {
+                "user_content": user_content,
+                "assistant_content": assistant_content,
+                "session_id": effective_session_id,
+                "memory_session_id": effective_memory_session_id,
+                "platform": self._platform,
+                "started_at": self._started_at,
+                "model": self._model,
+                "agent_namespace": self._agent_namespace,
+                "routing": self._current_routing_metadata(),
+            }
+        )
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         if self._disabled or self._bridge is None or not self._memory_session_id:
@@ -479,26 +493,48 @@ class AtlasMemoryProvider(MemoryProvider):
             self._bridge.shutdown()
             self._bridge = None
 
-    def _ensure_session_synced(self) -> None:
-        if self._session_synced or self._bridge is None or not self._memory_session_id:
+    def _ensure_session_synced(self, context: dict[str, Any] | None = None) -> None:
+        effective_session_id = str((context or {}).get("session_id") or self._session_id).strip()
+        effective_memory_session_id = str((context or {}).get("memory_session_id") or self._memory_session_id or "").strip()
+        if self._bridge is None or not effective_memory_session_id:
             return
-        updates: dict[str, Any] = {"legacy_session_id": self._session_id}
-        routing = self._current_routing_metadata()
+
+        if (
+            self._session_synced
+            and effective_memory_session_id == str(self._memory_session_id or "")
+            and effective_session_id == self._session_id
+        ):
+            return
+
+        updates: dict[str, Any] = {"legacy_session_id": effective_session_id}
+        routing = (context or {}).get("routing")
+        if not isinstance(routing, dict):
+            routing = self._current_routing_metadata()
         if routing:
             updates["model_config"] = {"routing": routing}
+
+        platform = str((context or {}).get("platform") or self._platform)
+        started_at = str((context or {}).get("started_at") or self._started_at)
+        model = (context or {}).get("model", self._model)
+        agent_namespace = str((context or {}).get("agent_namespace") or self._agent_namespace)
+
         self._bridge.request(
             {
                 "operation": "live-session-sync",
-                "memory_session_id": self._memory_session_id,
-                "hermes_session_id": self._session_id,
-                "platform": self._platform,
-                "started_at": self._started_at,
-                "model": self._model,
-                "agent_namespace": self._agent_namespace,
+                "memory_session_id": effective_memory_session_id,
+                "hermes_session_id": effective_session_id,
+                "platform": platform,
+                "started_at": started_at,
+                "model": model,
+                "agent_namespace": agent_namespace,
                 "updates": updates,
             }
         )
-        self._session_synced = True
+        if (
+            effective_memory_session_id == str(self._memory_session_id or "")
+            and effective_session_id == self._session_id
+        ):
+            self._session_synced = True
 
     def _current_routing_metadata(self) -> dict[str, str] | None:
         session_key = _env_text("HERMES_SESSION_KEY")
@@ -542,19 +578,25 @@ class AtlasMemoryProvider(MemoryProvider):
             try:
                 if item is None:
                     return
-                user_content, assistant_content = item
-                if self._bridge is None or not self._memory_session_id:
+                if not isinstance(item, dict):
                     continue
-                self._ensure_session_synced()
+
+                user_content = str(item.get("user_content") or "")
+                assistant_content = str(item.get("assistant_content") or "")
+                memory_session_id = str(item.get("memory_session_id") or "").strip()
+                if self._bridge is None or not memory_session_id:
+                    continue
+
+                self._ensure_session_synced(item)
                 self._bridge.request(
                     {
                         "operation": "live-session-append",
-                        "memory_session_id": self._memory_session_id,
-                        "hermes_session_id": self._session_id,
-                        "platform": self._platform,
-                        "started_at": self._started_at,
-                        "model": self._model,
-                        "agent_namespace": self._agent_namespace,
+                        "memory_session_id": memory_session_id,
+                        "hermes_session_id": str(item.get("session_id") or "").strip(),
+                        "platform": str(item.get("platform") or self._platform),
+                        "started_at": str(item.get("started_at") or self._started_at),
+                        "model": item.get("model", self._model),
+                        "agent_namespace": str(item.get("agent_namespace") or self._agent_namespace),
                         "messages": [
                             {"role": "user", "content": user_content},
                             {"role": "assistant", "content": assistant_content},

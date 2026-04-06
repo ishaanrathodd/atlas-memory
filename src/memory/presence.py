@@ -39,6 +39,14 @@ def _roll_proactive_count(
     return int(current.recent_proactive_count_24h or 0) + 1
 
 
+def _decayed_proactive_count(current: PresenceState | None, *, reference_time: datetime) -> int:
+    if current is None or current.last_proactive_message_at is None:
+        return 0
+    if (reference_time - current.last_proactive_message_at) > timedelta(hours=24):
+        return 0
+    return max(0, int(current.recent_proactive_count_24h or 0))
+
+
 def apply_presence_event(
     current: PresenceState | None,
     *,
@@ -117,6 +125,7 @@ def refresh_presence_state(
         update={
             "user_disappeared_mid_thread": disappeared,
             "conversation_energy": decayed_energy,
+            "recent_proactive_count_24h": _decayed_proactive_count(current, reference_time=reference_time),
             "updated_at": reference_time,
         }
     )

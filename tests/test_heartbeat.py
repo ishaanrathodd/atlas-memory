@@ -125,6 +125,33 @@ def test_build_background_task_completion_opportunity_is_immediately_due() -> No
     assert is_opportunity_due(opportunity, now=now) is True
 
 
+def test_background_completion_key_is_stable_and_collision_resistant_without_session_id() -> None:
+    now = datetime.now(timezone.utc)
+
+    first = build_background_task_completion_opportunity(
+        agent_namespace="main",
+        session_id=None,
+        reason_summary="Finished tracing the route lookup.",
+        now=now,
+    )
+    same = build_background_task_completion_opportunity(
+        agent_namespace="main",
+        session_id=None,
+        reason_summary="Finished tracing the route lookup.",
+        now=now,
+    )
+    different = build_background_task_completion_opportunity(
+        agent_namespace="main",
+        session_id=None,
+        reason_summary="Finished tracing the startup crash.",
+        now=now,
+    )
+
+    assert first.opportunity_key == same.opportunity_key
+    assert first.opportunity_key != different.opportunity_key
+    assert first.opportunity_key.startswith("completion:")
+
+
 def test_selection_score_penalizes_recent_same_opportunity_dispatch() -> None:
     now = datetime.now(timezone.utc)
     session_id = str(uuid4())

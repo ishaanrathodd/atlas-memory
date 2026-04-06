@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -479,7 +480,12 @@ def build_background_task_completion_opportunity(
     if not normalized_summary:
         raise ValueError("reason_summary is required for background task completion opportunities.")
     normalized_session_id = str(session_id or "").strip()
-    key_suffix = normalized_session_id or normalized_summary.lower().replace(" ", "-")[:48]
+    if normalized_session_id:
+        key_suffix = normalized_session_id
+    else:
+        slug = re.sub(r"[^a-z0-9]+", "-", normalized_summary.lower()).strip("-")[:32] or "background"
+        digest = hashlib.sha1(normalized_summary.encode("utf-8")).hexdigest()[:12]
+        key_suffix = f"{slug}:{digest}"
 
     refs = list(source_refs or [])
     if normalized_session_id:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -9,6 +9,7 @@ import pytest
 from memory.recall import (
     delete_session,
     export_sessions,
+    find_live_session_route,
     load_session_transcript,
     list_all_sessions,
     list_live_session_routes,
@@ -321,6 +322,33 @@ async def test_resolve_session_reference_matches_latest_numbered_title():
 
 
 @pytest.mark.asyncio
+async def test_resolve_session_reference_keeps_signal_platform_filter() -> None:
+    client = _RecordingClient()
+    now = datetime.now(timezone.utc)
+    session_id = str(uuid4())
+    client.transport.sessions[session_id] = SimpleNamespace(
+        id=session_id,
+        agent_namespace="default",
+        title="Signal Thread",
+        legacy_session_id=None,
+        platform=SimpleNamespace(value="signal"),
+        started_at=now,
+        ended_at=None,
+        message_count=1,
+        summary="Signal memory",
+    )
+
+    result = await resolve_session_reference(
+        client,
+        reference="Signal Thread",
+        platform="signal",
+    )
+
+    assert result["success"] is True
+    assert client.transport.list_calls[0]["platform"] == "signal"
+
+
+@pytest.mark.asyncio
 async def test_list_named_sessions_filters_empty_titles():
     client = _RecordingClient()
     now = datetime.now(timezone.utc)
@@ -420,6 +448,68 @@ async def test_list_live_session_routes_prefers_session_updated_at():
     assert result["success"] is True
     assert result["count"] == 1
     assert result["results"][0]["updated_at"] == updated.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_find_live_session_route_requires_matching_platform() -> None:
+    client = _RecordingClient()
+    base_time = datetime(2026, 4, 2, 11, 0, tzinfo=timezone.utc)
+
+    telegram_session = str(uuid4())
+    signal_session = str(uuid4())
+
+    client.transport.sessions[telegram_session] = SimpleNamespace(
+        id=telegram_session,
+        agent_namespace="default",
+        title="Telegram Route",
+        legacy_session_id="legacy-telegram",
+        platform=SimpleNamespace(value="telegram"),
+        started_at=base_time,
+        updated_at=base_time,
+        ended_at=None,
+        message_count=2,
+        summary=None,
+        model_config={
+            "routing": {
+                "session_key": "agent:main:telegram:dm:12345",
+                "platform": "telegram",
+                "chat_id": "12345",
+                "bound_at": base_time.isoformat(),
+            }
+        },
+        topics=[],
+    )
+    client.transport.sessions[signal_session] = SimpleNamespace(
+        id=signal_session,
+        agent_namespace="default",
+        title="Signal Route",
+        legacy_session_id="legacy-signal",
+        platform=SimpleNamespace(value="signal"),
+        started_at=base_time + timedelta(minutes=1),
+        updated_at=base_time + timedelta(minutes=1),
+        ended_at=None,
+        message_count=2,
+        summary=None,
+        model_config={
+            "routing": {
+                "session_key": "agent:main:signal:dm:12345",
+                "platform": "signal",
+                "chat_id": "12345",
+                "bound_at": (base_time + timedelta(minutes=1)).isoformat(),
+            }
+        },
+        topics=[],
+    )
+
+    route = await find_live_session_route(
+        client,
+        platform="signal",
+        chat_id="12345",
+    )
+
+    assert route["success"] is True
+    assert route["route"]["origin"]["platform"] == "signal"
+    assert route["route"]["session_id"] == "legacy-signal"
 
 
 @pytest.mark.asyncio

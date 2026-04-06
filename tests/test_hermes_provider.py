@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import importlib.util
 import os
+import queue
+import re
 import sys
 import types
 from pathlib import Path
@@ -184,3 +186,64 @@ def test_ensure_session_synced_includes_routing_metadata(monkeypatch) -> None:
     assert payload["updates"]["legacy_session_id"] == "agent:main:signal:dm:+917977457870"
     assert payload["updates"]["model_config"]["routing"]["session_key"] == "agent:main:signal:dm:+917977457870"
     assert payload["updates"]["model_config"]["routing"]["chat_id"] == "+917977457870"
+
+
+def test_sync_worker_preserves_enqueued_session_context(monkeypatch) -> None:
+    class DummyBridge:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        def request(self, payload: dict[str, object], *, timeout: float = _MODULE._SESSION_TIMEOUT_SECONDS) -> dict[str, object]:
+            self.payloads.append(payload)
+            return {"success": True}
+
+    provider = AtlasMemoryProvider()
+    provider._bridge = DummyBridge()
+    provider._platform = "signal"
+    provider._agent_namespace = "default"
+    provider._started_at = "2026-04-06T15:00:00+00:00"
+    provider._model = "gpt-5.3-codex"
+    provider._sync_queue = queue.Queue()
+
+    session_a = "agent:main:signal:dm:+15550000001"
+    session_b = "agent:main:signal:dm:+15550000002"
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", session_a)
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "signal")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "+15550000001")
+    provider.sync_turn("user-a", "assistant-a", session_id=session_a)
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", session_b)
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "signal")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "+15550000002")
+    provider.sync_turn("user-b", "assistant-b", session_id=session_b)
+
+    provider._sync_queue.put(None)
+    provider._sync_worker()
+
+    append_calls = [
+        payload
+        for payload in provider._bridge.payloads
+        if payload.get("operation") == "live-session-append"
+    ]
+
+    assert len(append_calls) == 2
+    assert append_calls[0]["memory_session_id"] == _MODULE._normalize_memory_session_id(session_a)
+    assert append_calls[1]["memory_session_id"] == _MODULE._normalize_memory_session_id(session_b)
+
+
+def test_hermes_provider_copies_remain_identical() -> None:
+    atlas_copy = (PLUGIN_DIR / "__init__.py").read_text(encoding="utf-8")
+    hermes_copy = (HERMES_AGENT_DIR / "plugins" / "memory" / "atlas" / "__init__.py").read_text(encoding="utf-8")
+
+    def _method_source(source: str, method_name: str) -> str:
+        pattern = re.compile(
+            rf"^    def {re.escape(method_name)}\(.*?(?=^    def |^def register\(|\Z)",
+            re.DOTALL | re.MULTILINE,
+        )
+        match = pattern.search(source)
+        assert match is not None, f"Could not find method {method_name}"
+        return match.group(0)
+
+    for method_name in ("sync_turn", "_ensure_session_synced", "_sync_worker"):
+        assert _method_source(atlas_copy, method_name) == _method_source(hermes_copy, method_name)

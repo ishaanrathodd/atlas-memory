@@ -477,6 +477,37 @@ def _filter_records_by_agent_namespace(records: list[Any], requested_namespace: 
     ]
 
 
+_SQL_PLATFORM_FILTER_ALLOWLIST = {"local", "telegram", "discord", "whatsapp", "other"}
+
+
+def _session_matches_platform(session: Session, requested_platform: str | None) -> bool:
+    normalized = str(requested_platform or "").strip().lower()
+    if not normalized:
+        return True
+
+    session_platform = str(getattr(getattr(session, "platform", None), "value", getattr(session, "platform", None)) or "")
+    if session_platform.strip().lower() == normalized:
+        return True
+
+    model_config = getattr(session, "session_model_config", None)
+    if model_config is None:
+        model_config = getattr(session, "model_config", None)
+    if not isinstance(model_config, dict):
+        return False
+
+    source_platform = str(model_config.get("source_platform") or "").strip().lower()
+    if source_platform == normalized:
+        return True
+
+    routing = model_config.get("routing")
+    if isinstance(routing, dict):
+        routing_platform = str(routing.get("platform") or "").strip().lower()
+        if routing_platform == normalized:
+            return True
+
+    return False
+
+
 def _fact_search_sort_key(fact: Fact) -> tuple[float, float]:
     event_time = fact.event_time.timestamp() if fact.event_time else 0.0
     return (float(fact.access_count), event_time)
@@ -1044,12 +1075,16 @@ class SupabaseTransport:
         platform: str | None = None,
         agent_namespace: str | None = None,
     ) -> list[Session]:
+        normalized_platform = str(platform or "").strip().lower() or None
         query = self._schema_client().table("sessions").select("*")
-        if platform:
-            query = query.eq("platform", platform)
+        if normalized_platform and normalized_platform in _SQL_PLATFORM_FILTER_ALLOWLIST:
+            query = query.eq("platform", normalized_platform)
         response = await self._run(lambda: query.order("started_at", desc=True).limit(max(limit * 6, 60)).execute())
         sessions = [Session.model_validate(_normalize_record(item)) for item in _response_rows(response)]
-        return _filter_records_by_agent_namespace(sessions, agent_namespace)[:limit]
+        sessions = _filter_records_by_agent_namespace(sessions, agent_namespace)
+        if normalized_platform:
+            sessions = [session for session in sessions if _session_matches_platform(session, normalized_platform)]
+        return sessions[:limit]
 
     async def list_episodes_for_session(self, session_id: str, limit: int | None = None) -> list[Episode]:
         def _query() -> Any:
@@ -2961,7 +2996,9 @@ class SupabaseTransport:
             response = await self._run(_find_existing)
         except Exception as exc:
             if _is_missing_relation_error(exc, "heartbeat_opportunities"):
-                logger.info("Memory heartbeat_opportunities table is not available yet; skipping heartbeat upsert.")
+                logger.warning(
+                    "Memory heartbeat_opportunities table is missing; heartbeat opportunity writes are disabled until migrations are applied."
+                )
                 return opportunity
             raise
 
@@ -3005,7 +3042,9 @@ class SupabaseTransport:
             )
         except Exception as exc:
             if _is_missing_relation_error(exc, "heartbeat_dispatches"):
-                logger.info("Memory heartbeat_dispatches table is not available yet; skipping dispatch insert.")
+                logger.warning(
+                    "Memory heartbeat_dispatches table is missing; heartbeat dispatch persistence is disabled until migrations are applied."
+                )
                 return dispatch
             raise
         return HeartbeatDispatch.model_validate(
@@ -3043,7 +3082,9 @@ class SupabaseTransport:
             response = await self._run(_query)
         except Exception as exc:
             if _is_missing_relation_error(exc, "heartbeat_dispatches"):
-                logger.info("Memory heartbeat_dispatches table is not available yet; returning empty dispatch history.")
+                logger.warning(
+                    "Memory heartbeat_dispatches table is missing; dispatch cooldown/history checks are unavailable until migrations are applied."
+                )
                 return []
             raise
 
@@ -3087,7 +3128,9 @@ class SupabaseTransport:
             response = await self._run(_query)
         except Exception as exc:
             if _is_missing_relation_error(exc, "heartbeat_opportunities"):
-                logger.info("Memory heartbeat_opportunities table is not available yet; returning empty heartbeat list.")
+                logger.warning(
+                    "Memory heartbeat_opportunities table is missing; heartbeat polling/listing is unavailable until migrations are applied."
+                )
                 return []
             raise
 
@@ -3123,7 +3166,9 @@ class SupabaseTransport:
             response = await self._run(_find_existing)
         except Exception as exc:
             if _is_missing_relation_error(exc, "heartbeat_opportunities"):
-                logger.info("Memory heartbeat_opportunities table is not available yet; skipping heartbeat cancel.")
+                logger.warning(
+                    "Memory heartbeat_opportunities table is missing; heartbeat cancellation is unavailable until migrations are applied."
+                )
                 return False
             raise
 
@@ -3170,7 +3215,9 @@ class SupabaseTransport:
             response = await self._run(_find_existing)
         except Exception as exc:
             if _is_missing_relation_error(exc, "heartbeat_opportunities"):
-                logger.info("Memory heartbeat_opportunities table is not available yet; skipping heartbeat transition.")
+                logger.warning(
+                    "Memory heartbeat_opportunities table is missing; heartbeat transitions are unavailable until migrations are applied."
+                )
                 return False
             raise
 

@@ -235,6 +235,44 @@ async def test_transport_list_sessions_applies_platform_filter() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transport_list_sessions_filters_signal_via_metadata_when_platform_is_other() -> None:
+    now = datetime.now(timezone.utc)
+    fake_client = FakeSupabaseClient(
+        {
+            "sessions": FakeQuery(
+                [
+                    {
+                        "id": str(uuid4()),
+                        "agent_namespace": "default",
+                        "platform": "other",
+                        "started_at": now.isoformat(),
+                        "message_count": 1,
+                        "user_message_count": 1,
+                        "topics": [],
+                        "dominant_emotions": [],
+                        "dominant_emotion_counts": {},
+                        "model_config": {
+                            "source_platform": "signal",
+                            "routing": {
+                                "platform": "signal",
+                                "chat_id": "+15551234567",
+                            },
+                        },
+                    }
+                ]
+            )
+        }
+    )
+    transport = SupabaseTransport(client=fake_client)
+
+    sessions = await transport.list_sessions(limit=5, platform="signal")
+
+    assert len(sessions) == 1
+    actions = fake_client.mapping["sessions"].actions
+    assert ("eq", ("platform", "signal")) not in actions
+
+
+@pytest.mark.asyncio
 async def test_transport_upsert_presence_state_round_trips_current_row() -> None:
     now = datetime.now(timezone.utc)
     existing_id = str(uuid4())

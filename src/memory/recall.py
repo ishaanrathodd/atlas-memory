@@ -28,10 +28,8 @@ def format_timestamp(ts: datetime | str | None) -> str:
 def normalize_platform_filter(platform: str | None) -> str | None:
     if not platform:
         return None
-    normalized = str(normalize_platform(platform))
-    if normalized in {"local", "telegram", "discord", "whatsapp", "other"}:
-        return normalized
-    return None
+    normalized = str(normalize_platform(platform)).strip().lower()
+    return normalized or None
 
 
 def _query_variants(query: str) -> list[str]:
@@ -732,9 +730,10 @@ async def list_live_session_routes(
     limit: int = 1000,
     agent_namespace: str | None = None,
 ) -> dict[str, Any]:
+    requested_platform = normalize_platform_filter(platform)
     sessions = await client.transport.list_sessions(
         limit=max(limit * 8, 200),
-        platform=normalize_platform_filter(platform),
+        platform=requested_platform,
         agent_namespace=agent_namespace,
     )
     latest_by_key: dict[str, dict[str, Any]] = {}
@@ -754,12 +753,15 @@ async def list_live_session_routes(
     results = []
     for session_key, payload in latest_by_key.items():
         routing = payload.get("routing") or {}
+        origin_platform = normalize_platform_filter(str(routing.get("platform") or payload.get("source") or ""))
+        if requested_platform and origin_platform != requested_platform:
+            continue
         results.append(
             {
                 "session_key": session_key,
                 "session_id": payload.get("legacy_session_id") or payload.get("session_id"),
                 "memory_session_id": payload.get("session_id"),
-                "platform": routing.get("platform") or payload.get("source"),
+                "platform": origin_platform,
                 "chat_type": routing.get("chat_type") or "dm",
                 "display_name": routing.get("display_name") or routing.get("chat_name") or routing.get("user_name"),
                 "bound_at": routing.get("bound_at") or payload.get("started_at"),
@@ -770,7 +772,7 @@ async def list_live_session_routes(
                     or payload.get("started_at")
                 ),
                 "origin": {
-                    "platform": routing.get("platform") or payload.get("source"),
+                    "platform": origin_platform,
                     "chat_id": routing.get("chat_id"),
                     "chat_name": routing.get("chat_name"),
                     "chat_type": routing.get("chat_type") or "dm",
@@ -805,6 +807,7 @@ async def find_live_session_route(
     limit: int = 1000,
     agent_namespace: str | None = None,
 ) -> dict[str, Any]:
+    requested_platform = normalize_platform_filter(platform)
     listing = await list_live_session_routes(
         client,
         platform=platform,
@@ -813,6 +816,11 @@ async def find_live_session_route(
     )
     results = listing.get("results") or []
     for item in results:
+        item_platform = normalize_platform_filter(
+            str(item.get("platform") or (item.get("origin") or {}).get("platform") or "")
+        )
+        if requested_platform and item_platform != requested_platform:
+            continue
         if session_key and str(item.get("session_key") or "") == str(session_key):
             return {"success": True, "backend": "memory", "route": item}
         origin = item.get("origin") or {}

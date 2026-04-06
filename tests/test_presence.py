@@ -64,3 +64,21 @@ def test_refresh_presence_state_marks_dropoff_after_gap() -> None:
     assert refreshed is not None
     assert refreshed.user_disappeared_mid_thread is True
     assert refreshed.conversation_energy < state.conversation_energy
+
+
+def test_refresh_presence_state_decays_stale_proactive_count() -> None:
+    now = datetime.now(timezone.utc)
+    state = PresenceState(
+        agent_namespace="main",
+        active_session_id=uuid4(),
+        last_agent_message_at=now - timedelta(minutes=5),
+        last_user_message_at=now - timedelta(minutes=10),
+        conversation_energy=0.6,
+        recent_proactive_count_24h=3,
+        last_proactive_message_at=now - timedelta(hours=30),
+    )
+
+    refreshed = refresh_presence_state(state, now=now)
+
+    assert refreshed is not None
+    assert refreshed.recent_proactive_count_24h == 0
