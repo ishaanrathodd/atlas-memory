@@ -14,6 +14,7 @@ from memory.recall import (
     list_live_session_routes,
     list_named_sessions,
     list_recent_sessions,
+    normalize_current_session_id,
     normalize_memory_session_id,
     prune_sessions,
     resolve_session_reference,
@@ -100,6 +101,13 @@ def test_normalize_memory_session_id_accepts_uuid_and_rejects_legacy_id():
     session_id = str(uuid4())
     assert normalize_memory_session_id(session_id) == session_id
     assert normalize_memory_session_id("20260401_193524_e17c68") is None
+
+
+def test_normalize_current_session_id_maps_generic_hermes_session_id_to_uuid() -> None:
+    normalized = normalize_current_session_id("agent:main:signal:dm:+917977457870")
+
+    assert normalized is not None
+    assert normalized == normalize_current_session_id("agent:main:signal:dm:+917977457870")
 
 
 @pytest.mark.asyncio

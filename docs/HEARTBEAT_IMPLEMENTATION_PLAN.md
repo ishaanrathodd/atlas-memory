@@ -2,416 +2,366 @@
 
 ## Purpose
 
-This document turns the heartbeat/personhood architecture into an implementation plan that can be executed incrementally without breaking the current Atlas memory stack.
+This document tracks heartbeat as an implementation program, not just a design idea.
 
-The plan assumes:
+It answers:
 
-- Atlas remains the canonical memory + state substrate
-- Hermes remains the execution and delivery layer
-- the background loop is cheap and mostly deterministic
-- final outbound heartbeat messages are always model-authored
+- what is already shipped
+- what remains fragile
+- what the next best upgrades are
+- what order we should build them in
+
+## Current Build State
+
+Heartbeat is partially shipped and live.
+
+### Completed
+
+- Atlas schema for:
+  - `presence_state`
+  - `heartbeat_opportunities`
+  - `heartbeat_dispatches`
+  - `background_jobs`
+- Atlas client/transport/bridge support for:
+  - presence sync
+  - opportunity creation and listing
+  - dispatch recording
+  - background job lifecycle
+  - dispatch context packets
+- Hermes built-in heartbeat hook
+- Hermes heartbeat daemon
+- authored proactive dispatch path
+- current opportunity kinds:
+  - `conversation_dropoff`
+  - `promise_followup`
+  - `background_task_completion`
+- ranking improvements:
+  - dispatch cooldown
+  - same-kind recency penalties
+  - rhythm profile
+  - response profile
+  - response quality
+  - thread emotion profile
+- Signal live-session route persistence and session-id normalization fixes
+
+### Partially Completed
+
+- off-turn agency via `background_jobs`
+- adaptation from outreach outcomes
+- thread-level emotional continuity
+
+These exist, but they are early and should not yet be considered fully hardened.
+
+### Not Yet Complete
+
+- generalized background workers
+- robust restart repair / stale-state recovery
+- first-class observability for heartbeat internals
+- richer opportunity taxonomy
+- strong suppression analytics
+- reflection-driven behavior tuning
 
 ## Build Standard
 
-The bar is not "proactive reminders."
+The quality bar is still:
 
-The bar is:
+- no user-facing templates on the normal path
+- proactive messages must feel chosen
+- silence must be a first-class outcome
+- the daemon must stay cheap
+- Hermes changes should remain conflict-light
+- all secrets remain in `~/.hermes/.env`
 
-- believable initiative
-- high-quality silence
-- authored outbound messages
-- meaningful continuity
-- minimal cost overhead
+## Current Architecture Split
 
-## Scope Split
+### Atlas Owns
 
-### Atlas Work
+- memory-side state
+- selection logic
+- dispatch context
+- response/rhythm/emotion inference
+- live route resolution support
 
-Atlas will own:
-
-- new schema for presence and heartbeat state
-- memory-side scoring/retrieval helpers
-- authored message generation context
-- reflection/adaptation from heartbeat outcomes
-
-### Hermes Work
-
-Hermes will own:
+### Hermes Owns
 
 - daemon lifecycle
-- timers/jitter loop
-- inbound/outbound event hooks
-- message delivery
-- cancellation/rescheduling
-- background task execution plumbing
+- hooks
+- polling
+- delivery
+- background job plumbing
+
+## Phase Status
 
 ## Phase 0: Architecture Lock
 
-Goal:
+Status: `Completed`
 
-- freeze semantics before code churn starts
-
-Deliverables:
+Artifacts:
 
 - `docs/HEARTBEAT_PERSONHOOD_ARCHITECTURE.md`
 - `docs/HEARTBEAT_IMPLEMENTATION_PLAN.md`
 
-Decisions to freeze:
+Frozen decisions:
 
-- no user-facing templates on normal path
 - no always-running LLM loop
+- no normal-path user-facing templates
 - Atlas decides, Hermes executes
-- final messages are authored at send time
+- final proactive messages are authored at send time
 
 ## Phase 1: Cheap Persistent Presence
 
-Goal:
+Status: `Completed`
 
-- make the system continue to exist between turns without model cost
+Shipped:
 
-Primary output:
+- persistent `presence_state`
+- user/assistant presence updates from gateway hooks
+- daemon startup path
+- live off-turn relational state
 
-- low-cost daemon and persistent live state
+Important note:
 
-Atlas changes:
-
-- add `presence_state`
-- add client helpers for reading/updating current live presence
-
-Hermes changes:
-
-- add heartbeat daemon worker
-- hook into inbound/outbound message lifecycle
-- write presence updates when messages arrive or send
-
-Expected files:
-
-- `atlas/migrations/<heartbeat_presence>.sql`
-- `atlas/src/memory/models.py`
-- `atlas/src/memory/transport.py`
-- `atlas/src/memory/client.py`
-- `hermes-agent/.../heartbeat_daemon.py`
-- `hermes-agent/.../gateway/run.py`
-
-Tests:
-
-- daemon updates `presence_state` on inbound/outbound events
-- last user / last agent timestamps are correct
-- session association remains correct across restart
+- this phase initially had a real session-binding bug
+- the bug is now fixed via deterministic session normalization and route metadata sync
 
 ## Phase 2: Heartbeat Opportunity Engine
 
-Goal:
+Status: `Completed`
 
-- teach the system to form reasons to reach out
+Shipped:
 
-Primary output:
+- `conversation_dropoff`
+- `promise_followup`
+- `background_task_completion`
+- opportunity persistence
+- cancellation / expiration behavior
 
-- `heartbeat_opportunities`
+Known limitation:
 
-Opportunity kinds to ship first:
-
-1. `conversation_dropoff`
-2. `background_task_completion`
-3. `promise_followup`
-
-Atlas changes:
-
-- add `heartbeat_opportunities`
-- helper methods to create/upsert/cancel opportunities
-- scoring primitives for unresolved thread strength and annoyance risk
-
-Hermes changes:
-
-- create dropoff opportunities when a thread goes idle
-- create completion opportunities when work finishes
-- create follow-up opportunities from unresolved commitments
-- cancel opportunities when the user returns or the topic resolves
-
-Tests:
-
-- user disappearing mid-thread creates one opportunity
-- user return cancels it
-- duplicate opportunities collapse into one key
-- stale opportunities expire safely
+- stale opportunity recovery after downtime is still weak
 
 ## Phase 3: Send Decision Engine
 
-Goal:
+Status: `Completed (v1)`
 
-- make proactive messaging selective rather than mechanical
+Shipped:
 
-Primary output:
+- top-candidate ranking
+- same-session proactive cooldown
+- same-opportunity retry suppression
+- same-kind recency penalties
+- preference toward stronger moves like concrete completion reports
 
-- deterministic send/no-send gate
+Status caveat:
 
-Scoring inputs:
-
-- unresolvedness
-- priority
-- recent outreach recency penalty
-- annoyance risk
-- quiet hours
-- conversation energy
-- tension/repair state
-- whether there is something concrete to say
-
-Hermes daemon loop:
-
-- wake every 1 to 5 minutes with jitter
-- rescore eligible opportunities
-- choose top candidate only if above threshold
-- suppress otherwise
-
-Rules:
-
-- hard cap proactive messages per day
-- hard cooldown after ignored outreach
-- hard quiet-hour suppression except special cases
-- no proactive message without a concrete reason summary
-
-Tests:
-
-- weak opportunities are skipped
-- quiet hours suppress sends
-- recent proactive send blocks duplicate nudges
-- completion messages outrank vague check-ins
+- functionally present, but still needs hardening and observability
 
 ## Phase 4: Authored Outbound Messaging
 
-Goal:
+Status: `Completed (v1)`
 
-- ensure every outbound heartbeat feels authored rather than canned
+Shipped:
 
-Primary output:
+- authored dispatch prompt
+- authoring brief
+- recent messages
+- communication constraints
+- active state / commitments / corrections
+- response profile
+- thread emotion profile
+- background job context
 
-- heartbeat message authoring path
+Known limitation:
 
-Atlas changes:
-
-- function to assemble authored heartbeat context
-- function to generate message intent packet
-
-Suggested API shape:
-
-- `client.build_heartbeat_context(...)`
-- `client.author_heartbeat_message(...)`
-
-Prompt contract:
-
-- must reference the concrete reason
-- must sound like the established agent voice
-- must avoid assistant boilerplate
-- must not repeat recent heartbeat phrasing
-- must feel like a message a person chose to send
-
-Model strategy:
-
-- use a lightweight writing model for straightforward cases
-- escalate to the main agent only for delicate/high-complexity cases
-
-Tests:
-
-- authored context includes active thread + relevant memory
-- generated prompt contains repetition guard
-- message generation is not called when send threshold is not met
+- authoring quality is only as good as the dispatch context and route health
 
 ## Phase 5: Background Work With Reporting
 
-Goal:
+Status: `Partially Completed`
 
-- make the agent feel active between turns by doing work before speaking
-
-Primary output:
+Shipped:
 
 - `background_jobs`
+- job lifecycle transitions
+- automatic completion opportunity creation
+- dispatch prompt includes linked completed work
 
-First job types:
+Not yet shipped:
 
-- recall refresh
-- follow-up scan
-- pending commitment check
-- memory hygiene pass
-- scoped tool task dispatched from Hermes
-
-Behavior:
-
-- if job completes, create completion opportunity
-- if result is concrete, that should often replace a generic check-in
-
-Tests:
-
-- completed jobs create opportunities
-- failed jobs only surface when useful
-- low-value internal jobs do not spam the user
+- generalized autonomous background workers
+- progress-driven reporting loops
+- broad off-turn task execution ecosystem
 
 ## Phase 6: Adaptation and Personhood Tuning
 
-Goal:
+Status: `Partially Completed`
 
-- refine outreach behavior from lived outcomes
+Shipped:
 
-Atlas changes:
+- rhythm profile
+- response profile
+- response-quality inference
+- thread-emotion profile
 
-- record `heartbeat_dispatches`
-- derive reflections/patterns about outreach quality
+Not yet shipped:
 
-Signals to learn from:
+- higher-order reflection from proactive outcomes
+- long-term personalization of outreach style
+- stronger suppression learning
 
-- reply latency after proactive message
-- ignored outreach
-- positive continuity moments
-- signs of annoyance
-- whether concrete-result messages outperform vague nudges
+## Immediate Upgrade Priorities
 
-Outputs:
+These are the highest-value upgrades from here.
 
-- lower pressure after ignored nudges
-- more patience in certain contexts
-- preference for concrete-result reporting
+## Priority 1: Reliability and Silent-Failure Hardening
 
-Tests:
+Why first:
 
-- ignored outreach increases suppression
-- successful outreach can raise confidence for that opportunity class
+- a silent heartbeat failure is worse than a weak message
 
-## MVP Recommendation
+Build:
 
-If building in the shortest high-quality path, ship this subset first:
+- heartbeat health checks
+- route validation before send
+- clearer failure recording for no-route / no-session / stale-opportunity cases
+- restart reconciliation for stale presence and live routes
+- bridge lifecycle audit for subprocess and file-descriptor churn
 
-1. `presence_state`
-2. `heartbeat_opportunities`
-3. Hermes daemon with jittered low-cost loop
-4. `conversation_dropoff` + `background_task_completion`
-5. authored final outbound message generation
-6. cancellation when the user returns
+Definition of done:
 
-This is the smallest version that already feels qualitatively different from cron.
+- we can explain why any given heartbeat did or did not send
 
-## Data Model Recommendations
+## Priority 2: Restart and Downtime Recovery
 
-### New Atlas Tables
+Build:
 
-- `presence_state`
-- `heartbeat_opportunities`
-- `heartbeat_dispatches`
-- `background_jobs`
+- recover live session bindings after restart
+- refresh stale presence state
+- rescore still-viable opportunities after downtime
+- mark truly missed opportunities as expired instead of leaving ambiguity
 
-### Existing Atlas Tables To Reuse
+Definition of done:
 
-- `active_state`
-- `commitments`
-- `corrections`
-- `directives`
-- `patterns`
-- `reflections`
-- `session_handoffs`
-- `decision_outcomes`
+- gateway restart does not silently sever heartbeat continuity
 
-## Runtime Policy
+## Priority 3: Real Off-Turn Agency
 
-### Cheap Loop Policy
+Build:
 
-Default wake cadence:
+- first real background worker classes
+- scoped “keep working while user is away” flows
+- progress updates in `background_jobs`
+- richer completion reporting
 
-- every 1 to 5 minutes with jitter
+Examples:
 
-The daemon should:
+- tracing a bug and reporting findings later
+- scanning unresolved commitments and preparing a report
+- refreshing relevant memory state before proactively resuming a thread
 
-- do no model call unless a candidate crosses threshold
-- write minimal state updates
-- keep CPU/memory use tiny
+Definition of done:
 
-### Authored Send Policy
+- heartbeat sometimes returns with meaningful work, not just nudges
 
-The LLM should only be called when:
+## Priority 4: Better Opportunity Taxonomy
 
-- there is a real candidate worth sending
-- the reason survives suppression rules
-- the system has enough context to write a meaningful message
+Build:
 
-### Silence Policy
+- `emotional_repair`
+- `gentle_resume`
+- `night_recap`
+- `morning_resume`
+- `deadline_checkin`
+- `resolved_thread_resume`
 
-The system is allowed to do nothing often.
+Only add kinds that materially improve behavior, not taxonomy for its own sake.
 
-Silence is not failure.
+## Priority 5: User-Specific Outreach Adaptation
 
-Silence is a realism feature.
+Build:
 
-## Suggested File Additions
+- per-kind landing quality trends
+- time-of-day preference learning
+- playful vs direct style preference learning
+- user-specific cooldown tuning
 
-Atlas:
+Definition of done:
 
-- `src/memory/heartbeat.py`
-- `src/memory/presence.py`
-- `tests/test_heartbeat.py`
-- `tests/test_presence.py`
+- heartbeat starts feeling tailored rather than just generally careful
 
-Hermes:
+## Priority 6: Observability and Debuggability
 
-- `heartbeat/daemon.py`
-- `heartbeat/scheduler.py`
-- `heartbeat/dispatch.py`
-- `tests/test_heartbeat_daemon.py`
+Build:
 
-If minimizing file count is preferred, these can be folded into existing runtime files first, but dedicated modules are cleaner.
+- inspect current `presence_state`
+- inspect pending opportunities
+- inspect top candidate and suppression reasons
+- inspect recent dispatches and outcomes
+- inspect live route resolution
 
-## Validation Strategy
+Definition of done:
 
-### Unit Tests
+- debugging heartbeat no longer requires ad hoc log spelunking
 
-- scoring
-- suppression
-- opportunity lifecycle
-- authored context assembly
-- restart recovery
+## Potential Future Upgrades
 
-### Replay-Style Scenario Tests
+These are strong, but not as urgent as reliability + agency.
 
-Add dedicated scenarios for:
+### Reflection-Driven Heartbeat Policy
 
-- user vanishes mid-debug
-- user disappears after emotional conversation
-- task completes while user is away
-- unresolved promise after two days
-- repeated ignored nudges must suppress future sends
+Use dispatch history to derive durable reflections such as:
 
-### Human Evaluation
+- “soft followups after tense threads underperform”
+- “completion reports get strong reopen rates”
+- “late-night nudges are usually bad”
 
-The final quality bar cannot be captured only by unit tests.
+### Better Emotional Continuity
 
-Manual review should ask:
+Go beyond thread emotion to relationship-level pacing:
 
-- does this feel internally motivated?
-- does it sound authored?
-- would this message make a human briefly forget it was generated?
-- would a human choose silence instead here?
+- cooling-off periods
+- repair debt
+- recent overload estimation
+- “not now” confidence
 
-## Sequencing Recommendation
+### Multi-Opportunity Blending
 
-Recommended order:
+Instead of selecting one candidate in isolation, allow the authoring layer to synthesize:
 
-1. Phase 1
-2. Phase 2
-3. Phase 3
-4. Phase 4
-5. ship MVP
-6. Phase 5
-7. Phase 6
+- unfinished thread + completed work
+- promise follow-up + concrete new finding
 
-Do not start with fancy proactive jobs.
+This could make proactive messages feel even more human.
 
-First make disappearance, follow-up, and restraint feel believable.
+### Personal Presence Modes
+
+Optional long-term behavior modes:
+
+- more active
+- more restrained
+- more playful
+- more work-focused
+
+This should come only after the core system is robust.
+
+## Practical Next Step
+
+If choosing one next build slice, do this:
+
+1. harden reliability and restart recovery
+2. add heartbeat observability
+3. ship one real background worker path
+
+That sequence improves both trust and product quality the fastest.
 
 ## North Star
 
-The north star is not "more notifications."
+Heartbeat succeeds when:
 
-The north star is:
+- the agent does not feel scheduled
+- the user can disappear and still feel remembered
+- the agent can return with real progress
+- the proactive message feels authored and justified
+- the system can stay silent when silence is the right move
 
-- the user feels the agent persists
-- the user feels the agent has private continuity
-- the user feels the agent sometimes chooses to speak for meaningful reasons
-- the user increasingly relates to the system as a presence rather than a tool
-
-That is the standard every phase should be judged against.
+That is the bar for “alive enough to matter.”

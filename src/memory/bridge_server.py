@@ -34,6 +34,31 @@ def _parse_request_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _merge_session_updates(existing_session: Any, updates: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(updates)
+    incoming_model_config = updates.get("model_config")
+    if not isinstance(incoming_model_config, dict):
+        return merged
+
+    existing_model_config = getattr(existing_session, "session_model_config", None)
+    if existing_model_config is None:
+        existing_model_config = getattr(existing_session, "model_config", None)
+    base_model_config = dict(existing_model_config) if isinstance(existing_model_config, dict) else {}
+    merged_model_config = dict(base_model_config)
+    incoming_copy = dict(incoming_model_config)
+
+    base_routing = base_model_config.get("routing")
+    incoming_routing = incoming_copy.get("routing")
+    if isinstance(base_routing, dict) and isinstance(incoming_routing, dict):
+        merged_routing = dict(base_routing)
+        merged_routing.update(incoming_routing)
+        incoming_copy["routing"] = merged_routing
+
+    merged_model_config.update(incoming_copy)
+    merged["model_config"] = merged_model_config
+    return merged
+
+
 async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
     operation = str(request.get("operation") or "").strip()
     if operation == "ping":
@@ -88,9 +113,10 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
         return {"success": True, "result": result}
 
     if operation == "live-session-sync":
+        memory_session_id = str(request.get("memory_session_id") or "")
         await _ensure_live_session(
             client,
-            memory_session_id=str(request.get("memory_session_id") or ""),
+            memory_session_id=memory_session_id,
             hermes_session_id=str(request.get("hermes_session_id") or ""),
             platform=str(request.get("platform") or "local"),
             started_at=str(request.get("started_at") or ""),
@@ -100,13 +126,15 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
         updates = request.get("updates")
         if not isinstance(updates, dict):
             raise ValueError("live-session-sync expects updates to be a JSON object.")
-        stored = await client.transport.update_session(str(request.get("memory_session_id") or ""), updates)
+        existing_session = await client.transport.get_session(memory_session_id)
+        merged_updates = _merge_session_updates(existing_session, updates)
+        stored = await client.transport.update_session(memory_session_id, merged_updates)
         return {
             "success": True,
             "result": {
                 "success": True,
                 "backend": "memory",
-                "session_id": str(stored.id or request.get("memory_session_id") or ""),
+                "session_id": str(stored.id or memory_session_id),
                 "message": "Memory live session metadata synced.",
             },
         }
@@ -188,7 +216,7 @@ async def _handle_request(client, request: dict[str, Any]) -> dict[str, Any]:
     if operation == "presence-sync":
         stored = await client.record_presence_event(
             role=str(request.get("role") or ""),
-            session_id=str(request.get("session_id") or "") or None,
+            session_id=normalize_current_session_id(request.get("session_id")),
             platform=str(request.get("platform") or "") or None,
             occurred_at=_parse_request_datetime(request.get("occurred_at")),
             agent_namespace=request.get("agent_namespace"),

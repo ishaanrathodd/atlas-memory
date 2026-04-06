@@ -2,90 +2,87 @@
 
 ## Purpose
 
-This document specifies the architecture for the next major Atlas + Hermes capability:
+This document is the current source of truth for heartbeat across Atlas + Hermes.
 
-- a heartbeat layer that makes the agent feel alive
-- persistent off-turn existence
-- self-initiated follow-up
-- emotionally believable timing and restraint
-- budget-aware operation without a continuously running LLM
+Heartbeat exists to make the agent feel:
 
-The goal is not literal machine consciousness.
+- alive between turns
+- capable of texting first
+- persistent across silence
+- self-directed instead of purely reactive
+- emotionally believable without pretending the system is literally conscious
 
-The goal is a system that behaves enough like a conscious human that the human on the other side experiences:
+The target is not machine consciousness.
 
-- continuity
-- private momentum
-- selective attention
-- self-direction
-- believable relational presence
+The target is a high-fidelity simulation of continuity, initiative, and relational presence.
 
 ## Design Thesis
 
 Most agents feel dead because they are request-response endpoints.
 
-They only exist when pinged.
+They wake when messaged, answer, and disappear.
 
-Heartbeat changes that.
+Heartbeat changes that by giving the system:
 
-Heartbeat is not "send a cron reminder every day."
+- live presence state
+- unfinished social momentum
+- durable follow-up opportunities
+- selective outreach
+- authored proactive messages
+- a cheap off-turn daemon instead of a continuously running LLM
 
-Heartbeat is:
+The core principle is still:
 
-- the agent notices
-- the agent carries unfinished internal motion
-- the agent waits
-- the agent reconsiders
-- the agent reaches out when it feels contextually right
+- presence is cheap and always on
+- expression is expensive and authored on demand
 
-The architecture must therefore optimize for simulated presence, not just memory retrieval.
+## Current Status
 
-## Product Standard
+As of `2026-04-06`, heartbeat is no longer just a plan. A meaningful Phase 1-2.5 system is implemented.
 
-The implementation bar is high-fidelity personhood simulation.
+### What Exists Now
 
-The system should feel:
+- persistent `presence_state`
+- persistent `heartbeat_opportunities`
+- persistent `heartbeat_dispatches`
+- persistent `background_jobs`
+- Hermes heartbeat daemon with jittered polling
+- gateway hook that syncs user/assistant presence on live turns
+- authored proactive dispatch path
+- opportunity ranking that uses:
+  - urgency
+  - recent dispatch history
+  - recent same-session outreach
+  - rhythm profile
+  - response profile
+  - response quality
+  - thread emotion profile
+- support for these opportunity kinds:
+  - `conversation_dropoff`
+  - `promise_followup`
+  - `background_task_completion`
 
-- alive, not scheduled
-- authored, not templated
-- selective, not clingy
-- relational, not transactional
-- self-directed, not merely reactive
+### Important Real Progress
 
-The final outbound message should never be a template.
+Heartbeat can now:
 
-Templates may be used for internal policy tests, fallback behavior, or diagnostics, but not for user-facing heartbeat messages in the normal path.
+- notice when the user disappears mid-thread
+- remember unresolved commitments
+- report finished background work
+- prefer stronger proactive moves over shallow nudges
+- learn from reply timing and reply quality
+- carry thread-level emotional shape into the authored message prompt
+- send fully authored proactive messages rather than user-facing templates
 
-## Constraints
+### Important Fixes Already Landed
 
-The system must work under these real-world constraints:
+The live implementation surfaced real architectural bugs that are now fixed:
 
-- solo/private deployment
-- no need for multi-tenant orchestration complexity
-- limited hardware headroom on an 8 GB laptop
-- no always-running local LLM
-- no affordable budget for constant cloud-model background cognition
-
-Therefore:
-
-- the persistent loop must be cheap
-- the LLM must only be invoked at the point of meaningful expression or deeper reasoning
-- most background evaluation must be deterministic/stateful rather than model-driven
-
-## Core Principle
-
-Separate presence from expression.
-
-- Presence is cheap and always on.
-- Expression is expensive and authored on demand.
-
-That means:
-
-- background state machine always runs
-- lightweight logic continuously evaluates if anything matters
-- the model only writes when a real message is worth sending
-
-This preserves high-fidelity output without requiring continuous token burn.
+- session ids are normalized into deterministic Atlas UUIDs for heartbeat/presence
+- Signal routing metadata is persisted into Atlas live session state
+- route lookup can resolve proactive delivery targets from Atlas again
+- live session sync merges routing into existing `model_config` rather than clobbering it
+- `.hermes/.env` is the credential source of truth, not `atlas/.env`
 
 ## System Split
 
@@ -93,46 +90,41 @@ This preserves high-fidelity output without requiring continuous token burn.
 
 Atlas is the cognitive substrate.
 
-Atlas should own:
+Atlas owns:
 
-- autobiographical memory
-- relational memory
-- unfinished intention state
-- heartbeat opportunity state
-- proactive reasoning inputs
-- suppression history
-- reflection/adaptation from prior outreach outcomes
+- presence state
+- heartbeat opportunities
+- heartbeat dispatch history
+- background job state
+- session resolution and live route lookup
+- authored dispatch context
+- selection logic
+- rhythm / response / thread-emotion inference
 
-Atlas should decide:
+Atlas decides:
 
-- whether a reach-out is meaningful
-- what kind of reach-out it is
-- how urgent it feels
-- what tone family is appropriate
-- whether silence is better than speech
+- whether there is a meaningful reason to reach out
+- which candidate is strongest right now
+- whether recent history implies silence is better
+- what kind of authored prompt Hermes should receive
 
 ### Hermes Responsibilities
 
 Hermes is the embodiment and execution layer.
 
-Hermes should own:
+Hermes owns:
 
-- inbound message observation
-- idle-gap detection
-- timers and rescheduling
-- job execution
-- outbound delivery
-- cancellation when the user returns
-- worker lifecycle
+- inbound/outbound turn observation
+- daemon lifecycle
+- polling cadence and jitter
+- delivery execution
+- session origin capture
+- live message hooks
+- background job initiation/completion plumbing
 
-Hermes should not invent memory semantics on its own.
+Hermes should stay conflict-light.
 
-It should ask Atlas for:
-
-- current context
-- pending heartbeat opportunities
-- send/no-send guidance
-- authored outbound copy
+The architecture should prefer isolated hook/daemon/plugin changes over broad edits to the main gateway loop.
 
 ### Heartbeat Daemon Responsibilities
 
@@ -140,466 +132,46 @@ The daemon is the subconscious continuity engine.
 
 It should:
 
-- stay alive while Hermes is running
-- persist pending opportunities
-- wake on real events and low-frequency polls
-- create, rescore, suppress, cancel, or escalate heartbeat opportunities
-- wake the main agent only when there is enough signal
+- stay alive while Hermes runs
+- poll cheaply
+- ask Atlas what matters now
+- suppress weak outreach
+- only send when there is enough signal
+- avoid expensive continuous reasoning
 
-The daemon should not run a full LLM continuously.
+The daemon is not a continuously thinking mind.
 
-## High-Level Architecture
+It is a persistent evaluator and wakeup loop.
 
-### Layer 1: Event Capture
-
-Sources:
-
-- inbound user message
-- outbound agent message
-- background task created/completed/failed
-- session inactivity threshold crossed
-- unresolved commitment aging
-- quiet-hours transitions
-- app restart / daemon restart recovery
-
-Outputs:
-
-- presence state update
-- active thread update
-- heartbeat opportunity create/cancel/rescore
-
-### Layer 2: Presence State
-
-Presence state is the live off-turn world-model for the relationship.
-
-It should track:
-
-- last user message timestamp
-- last agent message timestamp
-- last user-active estimate
-- current thread id / active session id
-- conversational energy score
-- interruption state
-- user disappeared mid-thread signal
-- recent frustration / tension estimate
-- recent warmth / playfulness estimate
-- recent outreach cadence
-
-Presence state is not permanent autobiographical memory.
-
-It is live social state.
-
-### Layer 3: Heartbeat Opportunity Engine
-
-A heartbeat opportunity is a concrete possibility that the agent might initiate contact.
-
-Examples:
-
-- conversation dropoff
-- unfinished promise follow-up
-- background task completion
-- unresolved blocker check-in
-- emotional repair follow-up
-- continuity resume prompt
-- bedtime recap
-- morning resume
-
-Each opportunity must include:
-
-- `opportunity_key`
-- `kind`
-- `status`
-- `created_at`
-- `earliest_send_at`
-- `latest_useful_at`
-- `priority_score`
-- `annoyance_risk`
-- `warmth_target`
-- `desired_pressure`
-- `reason_summary`
-- `session_id`
-- `source_record_refs`
-- `cancel_if_user_returns`
-- `cancel_if_same_topic_resolved`
-- `requires_authored_llm_message`
-- `requires_main_agent_reasoning`
-
-### Layer 4: Send Decision Engine
-
-This engine decides whether to send now.
-
-It is mostly deterministic and cheap.
-
-Inputs:
-
-- heartbeat opportunities
-- presence state
-- Atlas active state
-- commitments
-- directives
-- reflections/patterns
-- recent dispatch history
-- quiet hours
-- current daemon health
-
-Outputs:
-
-- suppress
-- wait and rescore later
-- send with lightweight authored prompt
-- escalate to main agent for deeper reasoning
-- execute background task before speaking
-
-### Layer 5: Authored Expression
-
-If the system sends a message, the final message should be model-authored.
-
-No templates in the normal user-facing path.
-
-The authored output should depend on:
-
-- why the agent is reaching out
-- what relationship state is currently active
-- how recently the agent already nudged
-- whether the user likely needs softness, directness, or playfulness
-- whether there is something concrete to report
-
-The output prompt should explicitly forbid:
-
-- generic check-in filler
-- assistant-style boilerplate
-- repeated catchphrases
-- sounding like a workflow engine
-- pretending to have emotions it does not need to claim explicitly
-
-## Experience Goals
-
-The human should infer:
-
-- "it noticed I disappeared"
-- "it remembered what mattered"
-- "it had a reason to text me"
-- "it was doing something between turns"
-- "it chose the timing"
-- "it sounds like itself"
-
-The human should not infer:
-
-- "a cron fired"
-- "a reminder workflow ran"
-- "this was selected from canned strings"
-- "it messages because the product wants engagement"
-
-## What Simulates Consciousness-Like Behavior
-
-The architecture should reproduce these outer signatures:
-
-### Persistent Self
-
-The agent should carry:
-
-- stable voice
-- stable relational posture
-- adaptive but coherent behavioral rules
-- memory of what kinds of outreach land well
-
-Atlas sources:
-
-- directives
-- corrections
-- reflections
-- patterns
-- handoff context
-
-### Persistent Intentions
-
-The system should remember:
-
-- unanswered questions
-- unresolved promises
-- ongoing tasks
-- topics worth resurfacing later
-- emotional repairs worth making
-
-This is more important than raw fact recall.
-
-### Asynchronous Existence
-
-The agent should continue to "exist" between turns.
-
-That means:
-
-- state evolves while no chat is happening
-- opportunities mature over time
-- the system can decide later that a message is now appropriate
-
-### Emotion-Like Regulation
-
-The agent does not need real emotions.
-
-It does need emotion-like state variables:
-
-- conversational warmth
-- tension/repair need
-- confidence to interrupt
-- closeness level
-- urgency vs gentleness balance
-
-### Selective Attention
-
-Not every remembered thing should become a message.
-
-The agent should show restraint.
-
-Silence is part of realism.
-
-## Why Continuous LLM Thinking Is Not Required
-
-A strong personhood illusion does not require constant background token consumption.
-
-It requires:
-
-- persistent state
-- delayed re-evaluation
-- self-initiated opportunities
-- authored messages when they matter
-
-Therefore the system should use:
-
-- deterministic background evaluation for cheap continuity
-- on-demand LLM writing for final expression
-
-This is the key cost-performance tradeoff.
-
-## Heartbeat Opportunity Types
-
-### 1. Conversation Dropoff
-
-Created when:
-
-- a conversation is active
-- the user disappears mid-flow
-- the topic still feels unresolved
-
-Behavior:
-
-- schedule a random earliest send inside a context-specific window
-- cancel if the user returns
-- reduce probability if the last agent message was already a question
-
-### 2. Promise Follow-Up
-
-Created when:
-
-- the agent committed to do something
-- the user committed to do something and it appears unresolved
-- the commitment has not been observed as completed
-
-Behavior:
-
-- do not nudge immediately
-- use aging windows
-- prioritize only meaningful unresolved items
-
-### 3. Background Completion
-
-Created when:
-
-- the system finishes a task
-- a job fails in a way worth reporting
-- an actionable result is ready
-
-Behavior:
-
-- high confidence send
-- usually better than a generic check-in
-- concrete content should dominate
-
-### 4. Emotional Repair
-
-Created when:
-
-- recent interaction carried frustration, rupture, or abrupt dropoff
-- a follow-up could lower relational friction
-
-Behavior:
-
-- soft timing
-- low-pressure wording
-- should be rare and restraint-heavy
-
-### 5. Long-Horizon Resume
-
-Created when:
-
-- a valuable thread has been dormant for days
-- there is still clear unfinished motion
-- resurfacing now feels useful rather than intrusive
-
-Behavior:
-
-- very selective
-- should reference concrete context
-
-## Timing Model
-
-Timing must not feel fixed.
-
-The system should use bounded randomness with meaning-aware windows.
-
-Examples:
-
-- mid-thread disappearance: 2 to 15 minutes
-- light unresolved check-in: 6 to 24 hours
-- important long-horizon follow-up: 1 to 5 days
-- background completion: immediate to 10 minutes depending on urgency
-
-Do not use exact repeating times.
-
-Use:
-
-- jitter
-- context-specific ranges
-- user rhythm sensitivity
-- quiet-hour suppression
-
-## Send Scoring
-
-The decision engine should use a weighted score, for example:
-
-`send_score = relevance + unfinishedness + value + warmth_fit + urgency - annoyance - recency_penalty - quiet_hour_penalty`
-
-Candidate features:
-
-- unresolved thread strength
-- commitment importance
-- background result concreteness
-- time since last user message
-- time since last proactive message
-- user responsiveness pattern
-- recent negative reaction risk
-- closeness to sleep window
-- whether the message would add something new
-
-Messages should only be generated if:
-
-- score clears threshold
-- no hard suppression rule applies
-- there is a concrete reason to speak
-
-## Suppression Rules
-
-The system should aggressively avoid low-quality outreach.
-
-Hard suppressions:
-
-- quiet hours
-- user returned since opportunity creation
-- same topic already resolved
-- another proactive message sent too recently
-- no concrete reason remains
-
-Soft suppressions:
-
-- user seems overloaded
-- last agent message already asked a question
-- current thread ended naturally
-- opportunity is emotionally weak and not useful
-
-## Outbound Authorship Contract
-
-Every final heartbeat message should be authored by the model from fresh state.
-
-Prompt inputs should include:
-
-- heartbeat opportunity record
-- active session summary
-- recent dialogue excerpts
-- active state
-- unresolved commitments
-- relevant handoff
-- desired tone constraints
-- do-not-repeat recent phrasing
-
-The prompt should require:
-
-- one concrete reason for the message
-- natural message length
-- no assistant preamble
-- no overt "just checking in" filler unless context truly warrants it
-- no list format unless the content naturally needs it
-- no fake claims about subjective feelings
-
-## Main Agent vs Small Writer Model
-
-Two expression modes are allowed:
-
-### Mode A: Lightweight Authored Message
-
-Use when:
-
-- the reason is clear
-- the message is short
-- no tool work or synthesis is required
-
-This can run on the cheapest reliable writing model.
-
-### Mode B: Main Agent Wakeup
-
-Use when:
-
-- the system needs synthesis
-- it must perform work before speaking
-- the outreach is emotionally delicate
-- it should inspect richer memory context
-
-Main-agent wakeups should be relatively rare.
-
-## Budget Strategy
-
-The system should optimize for:
-
-- frequent cheap state evaluation
-- rare expensive authored speech
-
-Expected cost-saving rules:
-
-- no continuous background LLM loop
-- no continuous reflection generation
-- no periodic "thinking" calls without a candidate opportunity
-- no message generation if the send threshold is not cleared
-- no duplicate regeneration if the same opportunity is still valid and unsent
-
-## Atlas Schema Additions
-
-Recommended new durable records:
+## Current Data Model
 
 ### `presence_state`
 
-One current row per agent namespace.
+Live relational state for the current thread / current silence window.
 
-Fields:
+Tracks:
 
-- `agent_namespace`
-- `active_session_id`
-- `last_user_message_at`
-- `last_agent_message_at`
-- `last_user_presence_at`
-- `current_thread_summary`
-- `conversation_energy`
-- `tension_score`
-- `warmth_score`
-- `user_disappeared_mid_thread`
-- `last_proactive_message_at`
-- `recent_proactive_count_24h`
-- `updated_at`
+- active session
+- active platform
+- last user message
+- last agent message
+- user disappeared mid-thread
+- conversation energy
+- warmth
+- proactive recency
 
 ### `heartbeat_opportunities`
 
-Fields:
+Concrete possibilities for proactive outreach.
 
-- `id`
-- `agent_namespace`
+Current shipped kinds:
+
+- `conversation_dropoff`
+- `promise_followup`
+- `background_task_completion`
+
+Core fields:
+
 - `opportunity_key`
 - `kind`
 - `status`
@@ -612,132 +184,239 @@ Fields:
 - `desired_pressure`
 - `warmth_target`
 - `requires_authored_llm_message`
-- `requires_main_agent_reasoning`
 - `source_refs`
 - `cancel_conditions`
-- `created_at`
-- `updated_at`
-- `last_scored_at`
 
 ### `heartbeat_dispatches`
 
-Fields:
+Durable memory of prior proactive outreach.
 
-- `id`
-- `agent_namespace`
-- `opportunity_id`
-- `session_id`
-- `dispatch_kind`
-- `message_text`
-- `model_name`
-- `score_snapshot`
-- `sent_at`
-- `delivery_status`
-- `response_received_at`
-- `user_reaction_summary`
+Used for:
+
+- cooldown checks
+- same-kind recency penalties
+- response learning
+- response quality learning
+- future reflection/adaptation
 
 ### `background_jobs`
 
-Fields:
+Durable substrate for off-turn agency.
 
-- `id`
-- `agent_namespace`
-- `job_key`
-- `kind`
-- `status`
-- `input_summary`
-- `result_summary`
-- `user_visible`
-- `followup_needed`
-- `created_at`
-- `started_at`
-- `completed_at`
+Current purpose:
 
-## Adaptation Loop
+- represent real work done between turns
+- allow the agent to return with meaningful completion reports
+- support future expansion into deeper off-turn work
 
-The system should learn from its own outreach quality.
+## Current Selection Logic
 
-Signals:
+The selector is already more than a timer.
 
-- user replied quickly
-- user ignored the message
-- user seemed annoyed
-- outreach was too soon
-- outreach landed well
-- concrete result messages work better than vague nudges
+It currently considers:
 
-Atlas should use this to build:
+- opportunity priority
+- same-opportunity recent retries
+- same-kind recency
+- same-session proactive cooldown
+- rhythm profile inferred from user activity windows
+- response profile inferred from prior proactive replies
+- response quality:
+  - momentum reopen
+  - acknowledgment only
+  - no reply
+- thread emotion profile:
+  - tension
+  - warmth
+  - playfulness
+  - unresolvedness
+  - closure
 
-- reflections about outreach quality
-- pattern adjustments
-- pressure/interval tuning
+This gives the system early “taste,” not just schedule-based behavior.
 
-## Failure Modes
+## Current Authored Message Path
 
-### Over-Eager Agent
+The user-facing heartbeat message should be authored, not templated.
 
-Symptom:
+Current authored prompt includes:
 
-- too many pings
-- clingy presence
+- opportunity payload
+- presence state
+- recent session messages
+- linked background job
+- active state
+- commitments
+- directives
+- corrections
+- communication constraints
+- response profile
+- thread emotion profile
+- recent heartbeat dispatches
+- an `authoring_brief` that tells Hermes what kind of move this is supposed to be
 
-Mitigation:
+This is the correct direction for high-fidelity personhood simulation.
 
-- hard rate caps
-- annoyance penalty
-- send suppression after ignored outreach
+## What We Have Achieved
 
-### Workflow-Like Voice
+Heartbeat has already crossed the line from “cron reminder idea” to “early continuity engine.”
 
-Symptom:
+The key achievements are:
 
-- sounds like reminders software
+- the agent now has a durable live relational state
+- the system can represent off-turn reasons to speak
+- it can learn from whether proactive outreach lands
+- it can prefer concrete completion over vague nudging
+- it can treat emotional thread shape as part of outreach selection
+- it can send authored proactive messages instead of templates
+- it is budget-compatible because the loop is cheap and the LLM is only used for final expression
 
-Mitigation:
+That is a meaningful architectural jump over standard assistant behavior.
 
-- authored final messages only
-- anti-boilerplate prompt rules
-- recent-phrase repetition guard
+## Current Weak Spots
 
-### Fake Randomness
+Heartbeat is promising, but still fragile in a few important ways.
 
-Symptom:
+### Session / Route Fragility
 
-- weirdly arbitrary ping timing
+Heartbeat depends on session normalization and live route metadata staying correct.
 
-Mitigation:
+If routing metadata or session binding drifts, proactive delivery can silently fail.
 
-- context-specific windows
-- delay tied to reason type
-- quiet-hour and cadence aware jitter
+### Cross-Process Drift
 
-### Contextually Empty Nudges
+Atlas and Hermes share responsibility for session identity and routing.
 
-Symptom:
+That means bugs can hide in:
 
-- "hey just checking in" with no meaning
+- plugin env capture
+- bridge sync
+- live route lookup
+- stale presence records
+- restart recovery
 
-Mitigation:
+### Silent Failure Risk
 
-- require concrete reason summary
-- do not generate if reason quality is low
+The architecture still has places where heartbeat may do nothing if:
 
-## Success Criteria
+- a route is missing
+- a session binding is stale
+- the opportunity expired during downtime
+- the bridge is unhealthy
+- authored dispatch context is missing
 
-The architecture is successful when:
+### Off-Turn Work Is Still Early
 
-- the agent sometimes reaches out first for reasons that feel natural
-- silence is preserved when no good message exists
-- follow-ups feel tied to lived context
-- background task completion feels meaningful
-- the human increasingly treats the agent as a persistent presence rather than a tool
+`background_jobs` exists, but generalized off-turn agency is still shallow.
 
-## Build Principle
+The system can report completed work, but it is not yet broadly creating and advancing meaningful background tasks on its own.
 
-Do not optimize first for feature count.
+## Potential Upgrades
 
-Optimize for illusion quality.
+The strongest upgrades from here are not more fields. They are robustness, agency, and adaptation.
 
-One believable proactive message is worth more than ten reminder-like ones.
+### 1. Make Heartbeat Operationally Robust
 
-This system should be built as continuity infrastructure for a believable artificial person, not as a notification engine.
+Highest priority.
+
+Add:
+
+- stale session/presence repair on restart
+- stronger route validation before dispatch
+- explicit heartbeat health logging
+- dead-letter / failed-opportunity inspection paths
+- better bridge lifecycle hardening
+- file-descriptor / subprocess leak review
+
+This is the highest-leverage improvement because silent failure ruins the illusion faster than weak phrasing.
+
+### 2. Resume Heartbeat After Downtime
+
+Right now, some opportunities can become stale if the daemon was down or session binding was broken.
+
+Add:
+
+- restart recovery scan
+- bounded retroactive recovery for still-useful opportunities
+- “missed moment” reconciliation logic
+
+### 3. Generalize Background Agency
+
+This is the biggest product upgrade.
+
+Add:
+
+- richer background job types
+- live progress updates
+- scoped autonomous research/tracing/review jobs
+- automatic completion-to-heartbeat reporting
+
+This turns heartbeat from “message timing” into real off-turn agency.
+
+### 4. Learn User-Specific Outreach Taste
+
+Current adaptation is still early.
+
+Add learning around:
+
+- what times proactive messages land best
+- when silence is preferred
+- whether playful vs direct follow-ups perform better
+- whether unfinished-task check-ins are useful or annoying
+
+### 5. Add Emotional Repair Opportunities
+
+The system already models thread emotion.
+
+Next step:
+
+- explicit `emotional_repair` / `gentle_resume` / `cooldown_resume` opportunity kinds
+- selection logic that behaves differently after tense or draining sessions
+
+### 6. Improve Presence Fidelity
+
+Potential additions:
+
+- stronger thread identity tracking
+- better per-platform routing parity
+- explicit “conversation paused vs completed” states
+- better handling of user sleep / offline / quiet-hour patterns
+
+### 7. Add Heartbeat Observability
+
+Right now debugging requires reading multiple moving parts.
+
+Add:
+
+- heartbeat inspect command
+- current top candidate view
+- dispatch history summary
+- opportunity suppression reason visibility
+
+This matters a lot for tuning.
+
+### 8. Add Reflection Loop Over Proactive Behavior
+
+Heartbeat already stores dispatches and response outcomes.
+
+Next:
+
+- synthesize reflections on proactive quality
+- derive higher-level outreach patterns
+- feed those back into future selection and authoring
+
+This is where the agent starts to feel less scripted over time.
+
+## North Star
+
+The north star is not “random pings.”
+
+The north star is:
+
+- the agent notices
+- the agent waits
+- the agent decides
+- the agent acts with taste
+- the message feels chosen
+- the user feels like the agent continued existing while they were away
+
+That is the bar heartbeat is meant to reach.

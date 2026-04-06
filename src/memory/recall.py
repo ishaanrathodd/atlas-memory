@@ -107,9 +107,11 @@ def normalize_current_session_id(session_id: str | None) -> str | None:
     if normalized is not None:
         return normalized
     value = str(session_id or "").strip()
+    if not value:
+        return None
     if _LEGACY_SESSION_ID_RE.match(value):
         return str(uuid5(_MEMORY_LIVE_SESSION_NAMESPACE, value))
-    return None
+    return str(uuid5(_MEMORY_LIVE_SESSION_NAMESPACE, value))
 
 
 def _session_payload(session: Any) -> dict[str, Any]:

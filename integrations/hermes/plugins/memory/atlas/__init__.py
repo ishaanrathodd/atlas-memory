@@ -215,6 +215,14 @@ def _build_runtime_env(hermes_home: str | None = None) -> dict[str, str]:
     return env
 
 
+def _env_text(*keys: str) -> str | None:
+    for key in keys:
+        value = str(os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
 class _AtlasBridgeClient:
     def __init__(self, *, hermes_home: str) -> None:
         self._hermes_home = _hermes_home_path(hermes_home)
@@ -474,6 +482,10 @@ class AtlasMemoryProvider(MemoryProvider):
     def _ensure_session_synced(self) -> None:
         if self._session_synced or self._bridge is None or not self._memory_session_id:
             return
+        updates: dict[str, Any] = {"legacy_session_id": self._session_id}
+        routing = self._current_routing_metadata()
+        if routing:
+            updates["model_config"] = {"routing": routing}
         self._bridge.request(
             {
                 "operation": "live-session-sync",
@@ -483,10 +495,46 @@ class AtlasMemoryProvider(MemoryProvider):
                 "started_at": self._started_at,
                 "model": self._model,
                 "agent_namespace": self._agent_namespace,
-                "updates": {"legacy_session_id": self._session_id},
+                "updates": updates,
             }
         )
         self._session_synced = True
+
+    def _current_routing_metadata(self) -> dict[str, str] | None:
+        session_key = _env_text("HERMES_SESSION_KEY")
+        if not session_key:
+            return None
+
+        routing: dict[str, str] = {
+            "session_key": session_key,
+            "bound_at": self._started_at,
+        }
+
+        platform = _env_text("HERMES_SESSION_PLATFORM") or self._platform
+        if platform:
+            routing["platform"] = platform
+
+        chat_id = _env_text("HERMES_SESSION_CHAT_ID")
+        if chat_id:
+            routing["chat_id"] = chat_id
+
+        chat_name = _env_text("HERMES_SESSION_CHAT_NAME")
+        if chat_name:
+            routing["chat_name"] = chat_name
+
+        thread_id = _env_text("HERMES_SESSION_THREAD_ID")
+        if thread_id:
+            routing["thread_id"] = thread_id
+
+        user_id = _env_text("HERMES_SESSION_USER_ID")
+        if user_id:
+            routing["user_id"] = user_id
+
+        user_id_alt = _env_text("HERMES_SESSION_USER_ID_ALT")
+        if user_id_alt:
+            routing["user_id_alt"] = user_id_alt
+
+        return routing
 
     def _sync_worker(self) -> None:
         while self._sync_queue is not None:

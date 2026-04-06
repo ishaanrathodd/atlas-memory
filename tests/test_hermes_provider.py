@@ -126,3 +126,61 @@ def test_build_runtime_env_resolves_references_and_atlas_aliases(tmp_path: Path,
     assert env["MEMORY_SUPABASE_KEY"] == "service-role-secret"
     assert env["MEMORY_OPENAI_BASE_URL"] == "https://api.z.ai/v1"
     assert env["HERMES_HOME"] == str(tmp_path)
+
+
+def test_current_routing_metadata_reads_live_gateway_env(monkeypatch) -> None:
+    provider = AtlasMemoryProvider()
+    provider._started_at = "2026-04-06T15:00:00+00:00"
+    provider._platform = "signal"
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:signal:dm:+917977457870")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "signal")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "+917977457870")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_NAME", "Ishaan")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-42")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-123")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID_ALT", "alt-456")
+
+    routing = provider._current_routing_metadata()
+
+    assert routing == {
+        "session_key": "agent:main:signal:dm:+917977457870",
+        "bound_at": "2026-04-06T15:00:00+00:00",
+        "platform": "signal",
+        "chat_id": "+917977457870",
+        "chat_name": "Ishaan",
+        "thread_id": "thread-42",
+        "user_id": "user-123",
+        "user_id_alt": "alt-456",
+    }
+
+
+def test_ensure_session_synced_includes_routing_metadata(monkeypatch) -> None:
+    class DummyBridge:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        def request(self, payload: dict[str, object], *, timeout: float = _MODULE._SESSION_TIMEOUT_SECONDS) -> dict[str, object]:
+            self.payloads.append(payload)
+            return {"success": True}
+
+    provider = AtlasMemoryProvider()
+    provider._bridge = DummyBridge()
+    provider._session_id = "agent:main:signal:dm:+917977457870"
+    provider._memory_session_id = "9b678df0-b337-55b8-b2b0-9b6dcb57d8b6"
+    provider._platform = "signal"
+    provider._agent_namespace = "default"
+    provider._started_at = "2026-04-06T15:00:00+00:00"
+    provider._model = "gpt-5.4-mini"
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:signal:dm:+917977457870")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "signal")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "+917977457870")
+
+    provider._ensure_session_synced()
+
+    payload = provider._bridge.payloads[0]
+    assert payload["operation"] == "live-session-sync"
+    assert payload["updates"]["legacy_session_id"] == "agent:main:signal:dm:+917977457870"
+    assert payload["updates"]["model_config"]["routing"]["session_key"] == "agent:main:signal:dm:+917977457870"
+    assert payload["updates"]["model_config"]["routing"]["chat_id"] == "+917977457870"
