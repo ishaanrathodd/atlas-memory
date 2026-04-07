@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -18,6 +19,11 @@ try:
     from supabase import create_client
 except ImportError:  # pragma: no cover - exercised indirectly in environments without supabase installed.
     create_client = None
+
+try:
+    from postgrest import SyncPostgrestClient
+except ImportError:  # pragma: no cover - exercised indirectly in environments without postgrest installed.
+    SyncPostgrestClient = None
 
 from memory.config import MemoryConfig
 from memory.embedding import EmbeddingProvider
@@ -92,6 +98,12 @@ _REFERENCE_CONTENT_MARKERS = (
     "skill.md",
     "soul.md",
 )
+
+
+def _use_direct_postgrest(url: str | None) -> bool:
+    if os.getenv("MEMORY_POSTGREST_DIRECT", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return bool(url and url.startswith("http://127.0.0.1:"))
 _OPERATIONAL_CONTENT_MARKERS = (
     "[system: if you have a meaningful status report or findings",
     "run the memory processor. execute:",
@@ -843,13 +855,28 @@ class SupabaseTransport:
         config = MemoryConfig.from_env()
         url = supabase_url or config.supabase_url
         key = supabase_key or config.supabase_key
+        direct_postgrest = _use_direct_postgrest(url)
         if client is None and (not url or not key):
             raise ValueError("MEMORY_SUPABASE_URL and MEMORY_SUPABASE_KEY must be configured.")
-        if client is None and create_client is None:
+        if client is None and not direct_postgrest and create_client is None:
             raise ImportError("supabase must be installed to use SupabaseTransport.")
+        if client is None and direct_postgrest and SyncPostgrestClient is None:
+            raise ImportError("postgrest must be installed to use direct PostgREST transport.")
         self.schema = schema or config.supabase_schema
         self.embedding_provider = embedding_provider
-        self._client = client or create_client(url, key)
+        if client is not None:
+            self._client = client
+        elif direct_postgrest:
+            self._client = SyncPostgrestClient(
+                url,
+                schema=self.schema,
+                headers={
+                    "apikey": key,
+                    "Authorization": f"Bearer {key}",
+                },
+            )
+        else:
+            self._client = create_client(url, key)
 
     async def _run(self, func: Any) -> Any:
         return await asyncio.to_thread(func)

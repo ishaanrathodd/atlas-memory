@@ -2,6 +2,26 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
+import re
+
+
+DEFAULT_HERMES_HOME = Path.home() / ".hermes"
+_ENV_ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENV_ALIAS_PAIRS: tuple[tuple[str, str], ...] = (
+    ("MEMORY_SUPABASE_URL", "ATLAS_SUPABASE_URL"),
+    ("MEMORY_SUPABASE_URL", "SUPABASE_URL"),
+    ("MEMORY_SUPABASE_KEY", "ATLAS_SUPABASE_KEY"),
+    ("MEMORY_SUPABASE_KEY", "SUPABASE_SERVICE_KEY"),
+    ("MEMORY_OPENAI_API_KEY", "ATLAS_OPENAI_API_KEY"),
+    ("MEMORY_OPENAI_API_KEY", "OPENAI_API_KEY"),
+    ("MEMORY_OPENAI_BASE_URL", "ATLAS_OPENAI_BASE_URL"),
+    ("MEMORY_OPENAI_BASE_URL", "OPENAI_BASE_URL"),
+    ("MEMORY_OPENAI_EMBEDDING_MODEL", "ATLAS_OPENAI_EMBEDDING_MODEL"),
+    ("MEMORY_EMBEDDING_DIMENSIONS", "ATLAS_EMBEDDING_DIMENSIONS"),
+    ("MEMORY_DEFAULT_PLATFORM", "ATLAS_DEFAULT_PLATFORM"),
+)
 
 
 def _first_env(*names: str) -> str | None:
@@ -10,6 +30,57 @@ def _first_env(*names: str) -> str | None:
         if value is not None:
             return value
     return None
+
+
+def _strip_quotes(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
+def _resolve_env_value(raw_value: str, context: dict[str, str]) -> str:
+    value = _strip_quotes(raw_value)
+    for _ in range(8):
+        resolved = _ENV_REFERENCE.sub(lambda match: context.get(match.group(1), os.environ.get(match.group(1), "")), value)
+        if resolved == value:
+            break
+        value = resolved
+    return value
+
+
+def _apply_env_aliases() -> None:
+    for target, source in _ENV_ALIAS_PAIRS:
+        if not os.getenv(target) and os.getenv(source):
+            os.environ[target] = os.environ[source]
+    os.environ.setdefault("HERMES_HOME", str(Path(os.getenv("HERMES_HOME", str(DEFAULT_HERMES_HOME))).expanduser()))
+
+
+def load_memory_env(hermes_home: str | Path | None = None) -> dict[str, str]:
+    raw_root = Path(hermes_home or os.getenv("HERMES_HOME") or DEFAULT_HERMES_HOME).expanduser()
+    env_path = raw_root if raw_root.name == ".env" else raw_root / ".env"
+    root = env_path.parent
+    os.environ["HERMES_HOME"] = str(root)
+    loaded: dict[str, str] = {}
+    if not env_path.exists():
+        _apply_env_aliases()
+        return loaded
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _ENV_ASSIGNMENT.match(line)
+        if not match:
+            continue
+        key, raw_value = match.groups()
+        context = {**os.environ, **loaded}
+        value = _resolve_env_value(raw_value, context)
+        loaded[key] = value
+        os.environ[key] = value
+
+    _apply_env_aliases()
+    return loaded
 
 
 @dataclass(slots=True)
@@ -40,7 +111,8 @@ class MemoryConfig:
     )
 
     @classmethod
-    def from_env(cls) -> "MemoryConfig":
+    def from_env(cls, hermes_home: str | Path | None = None) -> "MemoryConfig":
+        load_memory_env(hermes_home)
         return cls()
 
     def require_supabase(self) -> tuple[str, str]:

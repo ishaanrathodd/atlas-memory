@@ -178,6 +178,7 @@ def _build_runtime_env(hermes_home: str | None = None) -> dict[str, str]:
     for key in (
         "MEMORY_SUPABASE_URL",
         "MEMORY_SUPABASE_SCHEMA",
+        "MEMORY_POSTGREST_DIRECT",
         "MEMORY_OPENAI_BASE_URL",
         "MEMORY_OPENAI_EMBEDDING_MODEL",
         "MEMORY_EMBEDDING_DIMENSIONS",
